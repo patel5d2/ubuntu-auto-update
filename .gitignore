@@ -1,0 +1,39 @@
+# Logs
+*.log
+logs/
+
+# Runtime data
+*.pid
+*.lock
+
+# Backup files
+*.backup
+*.backup-*
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Local configuration overrides
+local.conf
+development.conf
+
+# Test files
+test_*
+*_test.sh
+
+# Temporary files
+/tmp/
+*.tmp

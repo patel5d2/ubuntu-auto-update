@@ -1,0 +1,25 @@
+[Unit]
+Description=Ubuntu Auto-Update Timer
+Documentation=https://github.com/yourusername/ubuntu-auto-update
+Requires=ubuntu-auto-update.service
+
+[Timer]
+# Run daily at 2:00 AM
+OnCalendar=*-*-* 02:00:00
+
+# If the system was down during the scheduled time, run shortly after boot
+Persistent=true
+
+# Add some randomization to avoid all systems updating at exactly the same time
+# This spreads the load if you have many systems
+RandomizedDelaySec=1800
+
+# Ensure the service doesn't start too quickly after boot
+OnBootSec=15min
+
+# Prevent the timer from running if the system is on battery power
+# Uncomment the next line if this is a laptop
+# ConditionACPower=true
+
+[Install]
+WantedBy=timers.target
