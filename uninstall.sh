@@ -1,5 +1,7 @@
 #!/bin/bash
 # Ubuntu Auto-Update Uninstaller (repo script)
+# Author: Dharmin Patel
+# Version: 2.0.0
 # This removes installed scripts, services, and optionally configuration/logs.
 set -euo pipefail
 

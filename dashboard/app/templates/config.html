@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en" data-bs-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ubuntu Auto-Update Dashboard - Config</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body>
+  <div id="app">
+    <nav class="navbar navbar-expand-lg bg-body-tertiary border-bottom">
+      <div class="container-fluid">
+        <a class="navbar-brand" href="/">Ubuntu Auto-Update Dashboard</a>
+        <div class="ms-auto d-flex align-items-center">
+          <a href="/" class="btn btn-sm btn-outline-secondary me-2">Dashboard</a>
+          <a href="/stats" class="btn btn-sm btn-outline-secondary">Stats</a>
+        </div>
+      </div>
+    </nav>
+
+    <main class="container-fluid mt-4">
+      <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          config.conf
+          <small class="text-muted">Last saved: {{ lastSaved }}</small>
+        </div>
+        <div class="card-body">
+          <form @submit.prevent="saveConfig">
+            <div class="d-flex justify-content-end mb-3">
+              <button type="button" class="btn btn-sm btn-outline-secondary" @click="restoreDefaults">Restore Defaults</button>
+            </div>
+            <div class="row">
+              <div class="col-md-6">
+                <h4>Package Management</h4>
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" v-model="config.ENABLE_FULL_UPGRADE">
+                  <label class="form-check-label">Enable Full Upgrade</label>
+                </div>
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" v-model="config.ENABLE_AUTOREMOVE">
+                  <label class="form-check-label">Enable Autoremove</label>
+                </div>
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" v-model="config.ENABLE_AUTOCLEAN">
+                  <label class="form-check-label">Enable Autoclean</label>
+                </div>
+
+                <h4 class="mt-4">Third-Party Package Managers</h4>
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" v-model="config.ENABLE_SNAP_UPDATES">
+                  <label class="form-check-label">Enable Snap Updates</label>
+                </div>
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" v-model="config.ENABLE_FLATPAK_UPDATES">
+                  <label class="form-check-label">Enable Flatpak Updates</label>
+                </div>
+              </div>
+
+              <div class="col-md-6">
+                <h4>System Options</h4>
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" v-model="config.ENABLE_AUTO_REBOOT">
+                  <label class="form-check-label">Enable Auto Reboot</label>
+                </div>
+                <div class="mb-3">
+                  <label class="form-label">Auto Reboot Time</label>
+                  <input type="time" class="form-control" v-model="config.AUTO_REBOOT_TIME">
+                </div>
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" v-model="config.UPDATE_FIRMWARE">
+                  <label class="form-check-label">Update Firmware</label>
+                </div>
+
+                <h4 class="mt-4">Logging and Notifications</h4>
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" v-model="config.QUIET_MODE">
+                  <label class="form-check-label">Quiet Mode</label>
+                </div>
+                <div class="mb-3">
+                  <label class="form-label">Notification Email</label>
+                  <input type="email" class="form-control" v-model="config.NOTIFICATION_EMAIL">
+                </div>
+                <div class="mb-3">
+                  <label class="form-label">Discord Webhook URL</label>
+                  <input type="text" class="form-control" v-model="config.SEND_DISCORD_WEBHOOK">
+                </div>
+              </div>
+            </div>
+
+            <h4 class="mt-4">Advanced Options</h4>
+            <div class="row">
+              <div class="col-md-6">
+                <div class="mb-3">
+                  <label class="form-label">Max Log Size</label>
+                  <input type="text" class="form-control" v-model="config.MAX_LOG_SIZE">
+                </div>
+              </div>
+              <div class="col-md-6">
+                <div class="mb-3">
+                  <label class="form-label">Max Log Files</label>
+                  <input type="number" class="form-control" v-model="config.MAX_LOG_FILES">
+                </div>
+              </div>
+            </div>
+
+            <button type="submit" class="btn btn-primary mt-4">Save</button>
+          </form>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="https://unpkg.com/vue@3"></script>
+  <script>
+    const { createApp } = Vue
+
+    createApp({
+      data() {
+        return {
+          config: {},
+          csrfToken: '',
+          lastSaved: ''
+        }
+      },
+      methods: {
+        async fetchConfig() {
+          const response = await fetch('/api/v1/config-file', { headers: { 'X-API-Key': localStorage.getItem('apiKey') } })
+          this.config = await response.json()
+        },
+        async fetchCsrfToken() {
+          const response = await fetch('/api/v1/csrf-token', { headers: { 'X-API-Key': localStorage.getItem('apiKey') } })
+          const data = await response.json()
+          this.csrfToken = data.csrf_token
+        },
+        async saveConfig() {
+          // Convert boolean values to strings
+          for (const key in this.config) {
+            if (typeof this.config[key] === 'boolean') {
+              this.config[key] = this.config[key].toString()
+            }
+          }
+          await fetch('/api/v1/config-file', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', 'X-API-Key': localStorage.getItem('apiKey'), 'X-CSRF-Token': this.csrfToken },
+            body: JSON.stringify(this.config)
+          })
+          this.lastSaved = new Date().toLocaleString()
+        },
+        async restoreDefaults() {
+          await fetch('/api/v1/config-file/restore', { method: 'POST', headers: { 'X-API-Key': localStorage.getItem('apiKey'), 'X-CSRF-Token': this.csrfToken } })
+          this.fetchConfig()
+        }
+      },
+      mounted() {
+        this.fetchConfig()
+        this.fetchCsrfToken()
+      }
+    }).mount('#app')
+  </script>
+</body>
+</html>
