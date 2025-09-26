@@ -277,9 +277,59 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **Discussions**: [GitHub Discussions](https://github.com/patel5d2/ubuntu-auto-update/discussions)
 - **Documentation**: [Wiki](https://github.com/patel5d2/ubuntu-auto-update/wiki)
 
+## 🌐 Web Dashboard (optional)
+A lightweight dashboard is included under `dashboard/` to collect and view update results from multiple servers.
+
+### Features
+- HTTP API to ingest update results (POST /api/v1/reports)
+- Basic table UI at `/` with auto-refresh and server filtering
+- SQLite storage (file `dashboard/dashboard.db`)
+- Simple API key auth via header `X-API-Key`
+
+### Run the dashboard
+1) Install dependencies (recommend a virtualenv):
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r dashboard/requirements.txt
+```
+
+2) Set an API key the server will accept:
+
+```bash
+export DASHBOARD_API_KEY="<a-strong-random-string>"
+```
+
+3) Start the server:
+
+```bash
+python -m uvicorn dashboard.app:app --host 0.0.0.0 --port 8080
+```
+
+Then open http://localhost:8080/ in your browser.
+
+### Configure agents (servers)
+In your `config.conf` (typically `/etc/ubuntu-auto-update/config.conf`) set:
+
+```bash
+SEND_DASHBOARD_URL="http://<dashboard-host>:8080/api/v1/reports"
+DASHBOARD_API_KEY="<the-same-key-as-server>"
+```
+
+No restart of the timer is necessary; each run will POST a short JSON with:
+- server hostname
+- status (success/error)
+- exit code
+- duration (seconds)
+- reboot required (true/false)
+- timestamp
+
+If the dashboard is unreachable, the update still completes; a warning is logged.
+
 ## 🗺️ Roadmap
 
-- [ ] Web dashboard for monitoring multiple servers
+- [x] Web dashboard for monitoring multiple servers
 - [ ] Integration with popular monitoring tools (Zabbix, Nagios, etc.)
 - [ ] Support for other Debian-based distributions
 - [ ] Rollback functionality for failed updates

@@ -36,6 +36,9 @@ ENABLE_AUTO_REBOOT=false
 AUTO_REBOOT_TIME="03:00"
 NOTIFICATION_EMAIL=""
 SEND_DISCORD_WEBHOOK=""
+# Dashboard reporting (optional)
+SEND_DASHBOARD_URL=""
+DASHBOARD_API_KEY=""
 UPDATE_FIRMWARE=false
 QUIET_MODE=false
 
@@ -289,6 +292,40 @@ send_notification() {
     fi
 }
 
+post_dashboard_update() {
+    local status=$1
+    local exit_code=$2
+    local start_time=$3
+
+    # Only post if configured
+    if [[ -z "${SEND_DASHBOARD_URL}" ]]; then
+        return 0
+    fi
+
+    local end_time
+    end_time=$(date +%s)
+    local duration=$((end_time - start_time))
+    local reboot_required=false
+    [[ -f /var/run/reboot-required ]] && reboot_required=true
+
+    local hostname
+    hostname=$(hostname)
+    local timestamp
+    timestamp=$(date -Iseconds)
+
+    # Build JSON payload without requiring jq
+    local payload
+    payload=$(printf '{"server":"%s","timestamp":"%s","status":"%s","exit_code":%d,"duration_seconds":%d,"reboot_required":%s,"version":"%s"}' \
+        "$hostname" "$timestamp" "$status" "$exit_code" "$duration" "$reboot_required" "2.0.0")
+
+    curl -sS -X POST \
+        -H "Content-Type: application/json" \
+        -H "X-API-Key: ${DASHBOARD_API_KEY:-}" \
+        -d "$payload" \
+        "$SEND_DASHBOARD_URL" >/dev/null 2>&1 || \
+        log_message "WARN" "Failed to POST update status to dashboard"
+}
+
 show_summary() {
     local start_time=$1
     local end_time=$(date +%s)
@@ -355,6 +392,10 @@ UPDATE_FIRMWARE=false
 QUIET_MODE=false
 NOTIFICATION_EMAIL=""
 SEND_DISCORD_WEBHOOK=""
+
+# Dashboard reporting
+SEND_DASHBOARD_URL=""
+DASHBOARD_API_KEY=""
 
 # Advanced options
 MAX_LOG_SIZE="10M"
@@ -446,6 +487,13 @@ main() {
     else
         send_notification "COMPLETED WITH ERRORS"
         log_message "ERROR" "Update process completed with errors"
+    fi
+
+    # Report to dashboard if configured
+    if [[ $exit_code -eq 0 ]]; then
+        post_dashboard_update "COMPLETED SUCCESSFULLY" "$exit_code" "$start_time"
+    else
+        post_dashboard_update "COMPLETED WITH ERRORS" "$exit_code" "$start_time"
     fi
     
     show_summary "$start_time"

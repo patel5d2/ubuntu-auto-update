@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ubuntu Auto-Update Dashboard</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 1.5rem; color: #1f2937; }
+    header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; }
+    h1 { font-size: 1.5rem; margin: 0; }
+    .controls { display: flex; gap: 0.75rem; align-items: center; }
+    select, button { padding: 0.35rem 0.6rem; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 0.5rem; border-bottom: 1px solid #e5e7eb; text-align: left; font-size: 0.95rem; }
+    tr:hover { background: #f9fafb; }
+    .status-ok { color: #065f46; font-weight: 600; }
+    .status-err { color: #991b1b; font-weight: 600; }
+    .pill { padding: 0.15rem 0.5rem; border-radius: 999px; font-size: 0.8rem; }
+    .pill-ok { background: #ecfdf5; color: #065f46; }
+    .pill-err { background: #fef2f2; color: #991b1b; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Ubuntu Auto-Update Dashboard</h1>
+    <div class="controls">
+      <label for="server">Server:</label>
+      <select id="server" onchange="onServerChange()">
+        <option value="">All</option>
+        {% for s in servers %}
+          <option value="{{ s }}" {% if selected_server == s %}selected{% endif %}>{{ s }}</option>
+        {% endfor %}
+      </select>
+      <button onclick="refresh()">Refresh</button>
+    </div>
+  </header>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Time</th>
+        <th>Server</th>
+        <th>Status</th>
+        <th>Exit</th>
+        <th>Duration</th>
+        <th>Reboot?</th>
+        <th>Client IP</th>
+      </tr>
+    </thead>
+    <tbody id="tbody">
+      {% for it in items %}
+      <tr>
+        <td>{{ it.timestamp }}</td>
+        <td>{{ it.server }}</td>
+        <td>
+          {% if it.status.startswith('COMPLETED SUCCESSFULLY') %}
+            <span class="pill pill-ok">OK</span>
+          {% else %}
+            <span class="pill pill-err">ERROR</span>
+          {% endif %}
+        </td>
+        <td>{{ it.exit_code }}</td>
+        <td>{{ it.duration_seconds }}s</td>
+        <td>{{ 'Yes' if it.reboot_required else 'No' }}</td>
+        <td>{{ it.ip or '' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <script>
+    function onServerChange() {
+      const s = document.getElementById('server').value;
+      const url = new URL(window.location.href);
+      if (s) url.searchParams.set('server', s); else url.searchParams.delete('server');
+      window.location.href = url.toString();
+    }
+    async function refresh() {
+      window.location.reload();
+    }
+    // Auto-refresh every 30s
+    setInterval(refresh, 30000);
+  </script>
+</body>
+</html>
