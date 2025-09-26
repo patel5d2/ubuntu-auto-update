@@ -33,24 +33,12 @@ A comprehensive, production-ready Ubuntu system update script with advanced feat
 
 ## 🚀 Quick Start
 
-### Basic Installation
-```bash
-# Download the script
-curl -O https://raw.githubusercontent.com/patel5d2/ubuntu-auto-update/main/update.sh
-chmod +x update.sh
+### Installation
 
-# Run with default settings
-sudo ./update.sh
-```
-
-### Advanced Installation
 ```bash
 # Clone the repository
 git clone https://github.com/patel5d2/ubuntu-auto-update.git
 cd ubuntu-auto-update
-
-# Make scripts executable
-chmod +x update.sh install.sh
 
 # Run the installer
 sudo ./install.sh
@@ -59,11 +47,12 @@ sudo ./install.sh
 ## 📋 Usage
 
 ### Command Line Options
+
 ```bash
-./update.sh [OPTIONS]
+update.sh [OPTIONS]
 
 Options:
-  -h, --help              Show help message
+  -h, --help              Show this help message
   -q, --quiet             Run in quiet mode (minimal output)
   -c, --config FILE       Use custom configuration file
   --no-reboot-check       Skip reboot requirement check
@@ -72,32 +61,35 @@ Options:
 ```
 
 ### Examples
+
 ```bash
 # Basic run with default settings
-sudo ./update.sh
+sudo update.sh
 
 # Run in quiet mode (perfect for cron jobs)
-sudo ./update.sh --quiet
+sudo update.sh --quiet
 
 # Use custom configuration
-sudo ./update.sh --config /etc/my-custom-update.conf
+sudo update.sh --config /etc/my-custom-update.conf
 
 # Preview changes without executing
-sudo ./update.sh --dry-run
+sudo update.sh --dry-run
 
 # Create configuration file
-./update.sh --create-config
+update.sh --create-config
 ```
 
 ## ⚙️ Configuration
 
 ### Creating Configuration File
+
 ```bash
 # Create default configuration
-./update.sh --create-config
+update.sh --create-config
 ```
 
 ### Configuration Options
+
 ```bash
 # Package management options
 ENABLE_FULL_UPGRADE=true          # Enable full distribution upgrades
@@ -117,6 +109,7 @@ UPDATE_FIRMWARE=false             # Update system firmware
 QUIET_MODE=false                  # Enable quiet mode
 NOTIFICATION_EMAIL=""             # Email for notifications
 SEND_DISCORD_WEBHOOK=""           # Discord webhook URL
+DISABLE_CURL=false                # Disable curl command
 
 # Advanced options
 MAX_LOG_SIZE="10M"                # Maximum log file size
@@ -127,25 +120,54 @@ MAX_LOG_FILES=5                   # Number of log files to keep
 
 ```
 ubuntu-auto-update/
-├── update.sh                      # Main update script
-├── config.conf                    # Configuration file (created on first run)
-├── install.sh                     # Installation script
-├── uninstall.sh                   # Uninstallation script (repo script)
-├── systemd/
-│   ├── ubuntu-auto-update.service           # Systemd service
-│   ├── ubuntu-auto-update.timer             # Systemd timer
-│   └── ubuntu-auto-update-dashboard.service # Dashboard service
 ├── dashboard/
-│   ├── app.py
-│   ├── requirements.txt
-│   └── templates/
-│       └── index.html
-├── dashboard/Dockerfile            # Container image for dashboard
-├── .dockerignore                   # Reduce Docker build context
+│   ├── app/
+│   │   ├── api/
+│   │   │   ├── __init__.py
+│   │   │   ├── config.py
+│   │   │   ├── config_file.py
+│   │   │   ├── reports.py
+│   │   │   ├── script.py
+│   │   │   ├── servers.py
+│   │   │   └── stats.py
+│   │   ├── core/
+│   │   │   ├── __init__.py
+│   │   │   ├── config_parser.py
+│   │   │   ├── csrf.py
+│   │   │   ├── database.py
+│   │   │   ├── runner.c
+│   │   │   ├── security.py
+│   │   │   ├── settings.py
+│   │   │   └── websockets.py
+│   │   ├── templates/
+│   │   │   ├── config.html
+│   │   │   ├── index.html
+│   │   │   └── stats.html
+│   │   ├── __init__.py
+│   │   └── main.py
+│   └── dashboard.db
 ├── docs/
-│   ├── CHANGELOG.md               # Version history
-│   └── TROUBLESHOOTING.md         # Common issues and solutions
-└── README.md                      # This file
+│   ├── CHANGELOG.md
+│   └── TROUBLESHOOTING.md
+├── systemd/
+│   ├── ubuntu-auto-update-dashboard.service
+│   ├── ubuntu-auto-update.service
+│   └── ubuntu-auto-update.timer
+├── .dockerignore
+├── .env
+├── .gitignore
+├── CHANGELOG.md
+├── config.conf
+├── config.default.conf
+├── Dockerfile
+├── Dockerfile.host-update
+├── install.sh
+├── LICENSE
+├── README.md
+├── requirements.txt
+├── uninstall.sh
+├── update-host.sh
+└── update.sh.tpl
 ```
 
 ## 🔄 Automation Options
@@ -303,11 +325,77 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - Community feedback and contributions
 - Ubuntu documentation and best practices
 
-## 📞 Support
+## 📖 How to use
 
-- **Issues**: [GitHub Issues](https://github.com/patel5d2/ubuntu-auto-update/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/patel5d2/ubuntu-auto-update/discussions)
-- **Documentation**: [Wiki](https://github.com/patel5d2/ubuntu-auto-update/wiki)
+1.  **Installation:**
+
+    ```bash
+    # Clone the repository
+    git clone https://github.com/patel5d2/ubuntu-auto-update.git
+    cd ubuntu-auto-update
+
+    # Run the installer
+    sudo ./install.sh
+    ```
+
+2.  **Configuration:**
+
+    The configuration file is located at `/etc/ubuntu-auto-update/config.conf`. You can edit this file to change the behavior of the script.
+
+    You can also configure the script from the web dashboard.
+
+3.  **Web Dashboard:**
+
+    The web dashboard allows you to view the update history, configure the script, and run the update script manually.
+
+    To run the dashboard, you can use the Docker container or run it directly on the host.
+
+    **Docker (recommended):**
+
+    ```bash
+    # Build the image
+    docker build -t ubuntu-auto-update -f Dockerfile.host-update .
+
+    # Run the container
+    docker run -d --privileged -v /:/host -p 8080:8080 --name ubuntu-auto-update ubuntu-auto-update
+    ```
+
+    **Directly on the host:**
+
+    ```bash
+    # Install dependencies
+    python3 -m venv .venv
+    source .venv/bin/activate
+    pip install -r requirements.txt
+
+    # Set the API key
+    export DASHBOARD_API_KEY="<your_api_key>"
+
+    # Run the dashboard
+    uvicorn app.main:app --host 0.0.0.0 --port 8080
+    ```
+
+4.  **Automation:**
+
+    You can automate the execution of the update script using cron or systemd.
+
+    **Cron:**
+
+    ```bash
+    # Edit crontab
+    crontab -e
+
+    # Add entry for daily updates at 2:00 AM
+    0 2 * * * /usr/local/bin/update.sh --quiet >> /var/log/ubuntu-auto-update/cron.log 2>&1
+    ```
+
+    **Systemd:**
+
+    ```bash
+    # Enable and start the timer
+    sudo systemctl enable ubuntu-auto-update.timer
+    sudo systemctl start ubuntu-auto-update.timer
+    ```
 
 ## 🌐 Web Dashboard (optional)
 A lightweight dashboard is included under `dashboard/` to collect and view update results from multiple servers.
@@ -410,15 +498,11 @@ The Dockerfile includes a security scanner that will scan the container for vuln
 Build and run the dashboard with Docker:
 
 ```bash
-# Build image
-docker build -t ubuntu-auto-update-dashboard -f Dockerfile.host-update .
+# Build the image
+docker build -t ubuntu-auto-update -f Dockerfile.host-update .
 
-# Run container (port 8080)
-docker run -d \
-  -e DASHBOARD_API_KEY="<a-strong-random-string>" \
-  -p 8080:8080 \
-  --name ubuntu-auto-update-dashboard \
-  ubuntu-auto-update-dashboard
+# Run the container
+docker run -d --privileged -v /:/host -p 8080:8080 --name ubuntu-auto-update ubuntu-auto-update
 ```
 
 **Security Warning:**
