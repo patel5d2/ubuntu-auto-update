@@ -6,6 +6,17 @@
 
 set -euo pipefail  # Exit on error, undefined vars, pipe failures
 
+# Privilege escalation helper
+if [[ $EUID -eq 0 ]]; then
+    SUDO=""
+else
+    if ! sudo -n true 2>/dev/null; then
+        echo "[ERROR] This script requires sudo privileges" >&2
+        exit 1
+    fi
+    SUDO="sudo"
+fi
+
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${SCRIPT_DIR}/config.conf"
@@ -54,25 +65,33 @@ log_message() {
     fi
     
     # Always log to file
-    echo "[$timestamp] [$level] $message" >> "$LOG_FILE"
+    if [[ -w "$LOG_FILE" ]]; then
+        echo "[$timestamp] [$level] $message" >> "$LOG_FILE"
+    else
+        if [[ -n "${SUDO:-}" ]]; then
+            echo "[$timestamp] [$level] $message" | $SUDO tee -a "$LOG_FILE" >/dev/null
+        else
+            echo "[$timestamp] [$level] $message" | tee -a "$LOG_FILE" >/dev/null
+        fi
+    fi
 }
 
 setup_logging() {
     # Create log directory
-    sudo mkdir -p "$LOG_DIR"
-    sudo touch "$LOG_FILE"
-    sudo chmod 644 "$LOG_FILE"
+    $SUDO mkdir -p "$LOG_DIR"
+    $SUDO touch "$LOG_FILE"
+    $SUDO chmod 644 "$LOG_FILE"
     
     # Rotate logs if they get too large
     if [[ -f "$LOG_FILE" ]] && [[ $(stat -c%s "$LOG_FILE" 2>/dev/null || stat -f%z "$LOG_FILE") -gt $(numfmt --from=iec "$MAX_LOG_SIZE") ]]; then
-        sudo logrotate -f /etc/logrotate.conf 2>/dev/null || {
+        $SUDO logrotate -f /etc/logrotate.conf 2>/dev/null || {
             # Manual log rotation if logrotate fails
             for i in $(seq $((MAX_LOG_FILES-1)) -1 1); do
-                [[ -f "${LOG_FILE}.$i" ]] && sudo mv "${LOG_FILE}.$i" "${LOG_FILE}.$((i+1))"
+                [[ -f "${LOG_FILE}.$i" ]] && $SUDO mv "${LOG_FILE}.$i" "${LOG_FILE}.$((i+1))"
             done
-            [[ -f "$LOG_FILE" ]] && sudo mv "$LOG_FILE" "${LOG_FILE}.1"
-            sudo touch "$LOG_FILE"
-            sudo chmod 644 "$LOG_FILE"
+            [[ -f "$LOG_FILE" ]] && $SUDO mv "$LOG_FILE" "${LOG_FILE}.1"
+            $SUDO touch "$LOG_FILE"
+            $SUDO chmod 644 "$LOG_FILE"
         }
     fi
 }
@@ -106,7 +125,7 @@ check_prerequisites() {
     # Check if running as root or with sudo privileges
     if [[ $EUID -eq 0 ]]; then
         log_message "WARN" "Running as root user"
-    elif ! sudo -n true 2>/dev/null; then
+    elif ! $SUDO -n true 2>/dev/null; then
         log_message "ERROR" "This script requires sudo privileges"
         exit 1
     fi
@@ -131,10 +150,10 @@ update_package_lists() {
     local cache_size=$(du -sm /var/cache/apt/archives 2>/dev/null | cut -f1 || echo 0)
     if [[ $cache_size -gt 1000 ]]; then  # More than 1GB
         log_message "INFO" "Cleaning large package cache ($cache_size MB)"
-        sudo apt-get clean
+        $SUDO apt-get clean
     fi
     
-    if ! sudo apt-get update -y; then
+    if ! $SUDO apt-get update -y; then
         log_message "ERROR" "Failed to update package lists"
         return 1
     fi
@@ -155,7 +174,7 @@ upgrade_packages() {
     
     log_message "INFO" "Found $upgradeable_count packages to upgrade"
     
-    if ! sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y; then
+    if ! $SUDO DEBIAN_FRONTEND=noninteractive apt-get upgrade -y; then
         log_message "ERROR" "Package upgrade failed"
         return 1
     fi
@@ -167,7 +186,7 @@ full_upgrade() {
     if [[ "$ENABLE_FULL_UPGRADE" == "true" ]]; then
         log_message "INFO" "Performing full distribution upgrade..."
         
-        if ! sudo DEBIAN_FRONTEND=noninteractive apt-get full-upgrade -y; then
+        if ! $SUDO DEBIAN_FRONTEND=noninteractive apt-get full-upgrade -y; then
             log_message "ERROR" "Full upgrade failed"
             return 1
         fi
@@ -181,13 +200,13 @@ full_upgrade() {
 cleanup_packages() {
     if [[ "$ENABLE_AUTOREMOVE" == "true" ]]; then
         log_message "INFO" "Removing unnecessary packages..."
-        sudo apt-get autoremove -y
+        $SUDO apt-get autoremove -y
         log_message "INFO" "Unnecessary packages removed"
     fi
     
     if [[ "$ENABLE_AUTOCLEAN" == "true" ]]; then
         log_message "INFO" "Cleaning package cache..."
-        sudo apt-get autoclean
+        $SUDO apt-get autoclean
         log_message "INFO" "Package cache cleaned"
     fi
 }
@@ -195,7 +214,7 @@ cleanup_packages() {
 update_snap_packages() {
     if [[ "$ENABLE_SNAP_UPDATES" == "true" ]] && command -v snap >/dev/null 2>&1; then
         log_message "INFO" "Updating snap packages..."
-        if sudo snap refresh; then
+        if $SUDO snap refresh; then
             log_message "INFO" "Snap packages updated successfully"
         else
             log_message "WARN" "Some snap updates may have failed"
@@ -217,7 +236,7 @@ update_flatpak_packages() {
 update_firmware() {
     if [[ "$UPDATE_FIRMWARE" == "true" ]] && command -v fwupdmgr >/dev/null 2>&1; then
         log_message "INFO" "Checking for firmware updates..."
-        if sudo fwupdmgr refresh && sudo fwupdmgr update -y; then
+        if $SUDO fwupdmgr refresh && $SUDO fwupdmgr update -y; then
             log_message "INFO" "Firmware updated successfully"
         else
             log_message "WARN" "Firmware update failed or no updates available"
@@ -236,9 +255,9 @@ check_reboot_required() {
         
         if [[ "$ENABLE_AUTO_REBOOT" == "true" ]]; then
             log_message "INFO" "Auto-reboot enabled, scheduling reboot for $AUTO_REBOOT_TIME"
-            echo "sudo shutdown -r $AUTO_REBOOT_TIME" | sudo at "$AUTO_REBOOT_TIME" 2>/dev/null || {
+            echo "shutdown -r $AUTO_REBOOT_TIME" | $SUDO at "$AUTO_REBOOT_TIME" 2>/dev/null || {
                 log_message "WARN" "'at' command not available, scheduling immediate reboot in 1 minute"
-                sudo shutdown -r +1
+                $SUDO shutdown -r +1
             }
         else
             log_message "WARN" "Please reboot the system to complete the update process"
