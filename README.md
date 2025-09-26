@@ -127,17 +127,25 @@ MAX_LOG_FILES=5                   # Number of log files to keep
 
 ```
 ubuntu-auto-update/
-├── update.sh              # Main update script
-├── config.conf           # Configuration file (created on first run)
-├── install.sh            # Installation script
-├── uninstall.sh          # Uninstallation script
+├── update.sh                      # Main update script
+├── config.conf                    # Configuration file (created on first run)
+├── install.sh                     # Installation script
+├── uninstall.sh                   # Uninstallation script (repo script)
 ├── systemd/
-│   ├── ubuntu-auto-update.service  # Systemd service
-│   └── ubuntu-auto-update.timer    # Systemd timer
+│   ├── ubuntu-auto-update.service           # Systemd service
+│   ├── ubuntu-auto-update.timer             # Systemd timer
+│   └── ubuntu-auto-update-dashboard.service # Dashboard service
+├── dashboard/
+│   ├── app.py
+│   ├── requirements.txt
+│   └── templates/
+│       └── index.html
+├── dashboard/Dockerfile            # Container image for dashboard
+├── .dockerignore                   # Reduce Docker build context
 ├── docs/
-│   ├── CHANGELOG.md       # Version history
-│   └── TROUBLESHOOTING.md # Common issues and solutions
-└── README.md             # This file
+│   ├── CHANGELOG.md               # Version history
+│   └── TROUBLESHOOTING.md         # Common issues and solutions
+└── README.md                      # This file
 ```
 
 ## 🔄 Automation Options
