@@ -36,7 +36,7 @@ A comprehensive, production-ready Ubuntu system update script with advanced feat
 ### Basic Installation
 ```bash
 # Download the script
-curl -O https://raw.githubusercontent.com/yourusername/ubuntu-auto-update/main/update.sh
+curl -O https://raw.githubusercontent.com/patel5d2/ubuntu-auto-update/main/update.sh
 chmod +x update.sh
 
 # Run with default settings
@@ -46,7 +46,7 @@ sudo ./update.sh
 ### Advanced Installation
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/ubuntu-auto-update.git
+git clone https://github.com/patel5d2/ubuntu-auto-update.git
 cd ubuntu-auto-update
 
 # Make scripts executable
@@ -252,7 +252,7 @@ We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.
 
 ### Development Setup
 ```bash
-git clone https://github.com/yourusername/ubuntu-auto-update.git
+git clone https://github.com/patel5d2/ubuntu-auto-update.git
 cd ubuntu-auto-update
 
 # Make changes
@@ -273,9 +273,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📞 Support
 
-- **Issues**: [GitHub Issues](https://github.com/yourusername/ubuntu-auto-update/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/ubuntu-auto-update/discussions)
-- **Documentation**: [Wiki](https://github.com/yourusername/ubuntu-auto-update/wiki)
+- **Issues**: [GitHub Issues](https://github.com/patel5d2/ubuntu-auto-update/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/patel5d2/ubuntu-auto-update/discussions)
+- **Documentation**: [Wiki](https://github.com/patel5d2/ubuntu-auto-update/wiki)
 
 ## 🗺️ Roadmap
 
