@@ -35,6 +35,27 @@
     </div>
   </header>
 
+  <section id="cards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;margin:14px 0 22px 0;">
+    {% for sm in summaries %}
+    {% set last = sm.last or {} %}
+    {% set ok = last.status and last.status.startswith('COMPLETED SUCCESSFULLY') %}
+    <div style="border:1px solid #e5e7eb;border-radius:10px;padding:12px;background:#fff;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+        <div style="font-weight:600;">{{ sm.server }}</div>
+        <div class="pill {{ 'pill-ok' if ok else 'pill-err' }}">{{ 'OK' if ok else 'ERROR' }}</div>
+      </div>
+      <div style="font-size:0.9rem;color:#374151;">
+        <div>Last: {{ last.timestamp or '—' }}</div>
+        <div>Duration: {{ (last.duration_seconds|string) + 's' if last.duration_seconds is not none else '—' }}</div>
+        <div>Success 24h: {{ sm.success_24h }}/{{ sm.total_24h }}{% if sm.success_rate_24h is not none %} ({{ (sm.success_rate_24h*100)|round(0) }}%){% endif %}</div>
+      </div>
+      <div style="margin-top:8px;">
+        <a href="/?server={{ sm.server }}" style="font-size:0.85rem;">View details →</a>
+      </div>
+    </div>
+    {% endfor %}
+  </section>
+
   <table>
     <thead>
       <tr>

@@ -327,6 +327,51 @@ No restart of the timer is necessary; each run will POST a short JSON with:
 
 If the dashboard is unreachable, the update still completes; a warning is logged.
 
+### Run the dashboard as a systemd service
+1) Place the repo on the server (e.g., /opt/ubuntu-auto-update) and create a Python venv:
+
+```bash
+sudo mkdir -p /opt/ubuntu-auto-update
+sudo chown -R $USER:$USER /opt/ubuntu-auto-update
+rsync -a --delete ./ /opt/ubuntu-auto-update/
+python3 -m venv /opt/ubuntu-auto-update/.venv
+/opt/ubuntu-auto-update/.venv/bin/pip install -r /opt/ubuntu-auto-update/dashboard/requirements.txt
+```
+
+2) Create environment file:
+
+```bash
+cat | sudo tee /etc/ubuntu-auto-update-dashboard.env >/dev/null <<'EOF'
+DASHBOARD_API_KEY="<a-strong-random-string>"
+PORT=8080
+EOF
+```
+
+3) Install service file and start:
+
+```bash
+sudo cp systemd/ubuntu-auto-update-dashboard.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable ubuntu-auto-update-dashboard
+sudo systemctl start ubuntu-auto-update-dashboard
+sudo systemctl --no-pager status ubuntu-auto-update-dashboard
+```
+
+### Docker deployment
+Build and run the dashboard with Docker:
+
+```bash
+# Build image
+docker build -t ubuntu-auto-update-dashboard -f dashboard/Dockerfile .
+
+# Run container (port 8080)
+docker run -d \
+  -e DASHBOARD_API_KEY="<a-strong-random-string>" \
+  -p 8080:8080 \
+  --name ubuntu-auto-update-dashboard \
+  ubuntu-auto-update-dashboard
+```
+
 ## 🗺️ Roadmap
 
 - [x] Web dashboard for monitoring multiple servers

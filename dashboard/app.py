@@ -15,7 +15,7 @@ TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 API_KEY = os.environ.get("DASHBOARD_API_KEY", "")
 
-app = FastAPI(title="Ubuntu Auto-Update Dashboard", version="0.1.0")
+app = FastAPI(title="Ubuntu Auto-Update Dashboard", version="0.2.0")
 
 
 def init_db():
@@ -116,24 +116,99 @@ async def list_reports(server: Optional[str] = None, limit: int = 100):
         conn.close()
     return {"items": items}
 
+@app.get("/api/v1/servers")
+async def list_servers():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        servers = [r[0] for r in conn.execute("SELECT DISTINCT server FROM reports").fetchall()]
+        out = []
+        for s in servers:
+            last = conn.execute(
+                "SELECT * FROM reports WHERE server = ? ORDER BY datetime(timestamp) DESC, id DESC LIMIT 1",
+                (s,),
+            ).fetchone()
+            # 24h stats
+            counts = conn.execute(
+                """
+                SELECT
+                    SUM(CASE WHEN status LIKE 'COMPLETED SUCCESSFULLY%' THEN 1 ELSE 0 END) AS ok,
+                    COUNT(*) AS total
+                FROM reports
+                WHERE server = ? AND datetime(timestamp) >= datetime('now','-1 day')
+                """,
+                (s,),
+            ).fetchone()
+            ok = counts[0] or 0
+            total = counts[1] or 0
+            success_rate = (ok / total) if total else None
+            out.append({
+                "server": s,
+                "last": dict(last) if last else None,
+                "success_24h": ok,
+                "total_24h": total,
+                "success_rate_24h": success_rate,
+            })
+    finally:
+        conn.close()
+    return {"items": out}
+
+@app.get("/healthz")
+async def healthz():
+    # Simple health endpoint
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("SELECT 1")
+        conn.close()
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request, server: Optional[str] = None):
-    # Gather basic aggregates
+    # Gather aggregates and recent items
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     try:
         servers = [r[0] for r in conn.execute("SELECT DISTINCT server FROM reports ORDER BY server ASC").fetchall()]
+        # Summaries (like uptime cards)
+        summaries = []
+        for s in servers:
+            last = conn.execute(
+                "SELECT * FROM reports WHERE server = ? ORDER BY datetime(timestamp) DESC, id DESC LIMIT 1",
+                (s,),
+            ).fetchone()
+            counts = conn.execute(
+                """
+                SELECT
+                    SUM(CASE WHEN status LIKE 'COMPLETED SUCCESSFULLY%' THEN 1 ELSE 0 END) AS ok,
+                    COUNT(*) AS total
+                FROM reports
+                WHERE server = ? AND datetime(timestamp) >= datetime('now','-1 day')
+                """,
+                (s,),
+            ).fetchone()
+            ok = (counts[0] or 0)
+            total = (counts[1] or 0)
+            rate = (ok / total) if total else None
+            summaries.append({
+                "server": s,
+                "last": dict(last) if last else None,
+                "success_24h": ok,
+                "total_24h": total,
+                "success_rate_24h": rate,
+            })
         if server and server not in servers:
             server = None
         if server:
             rows = conn.execute(
-                "SELECT * FROM reports WHERE server = ? ORDER BY datetime(timestamp) DESC, id DESC LIMIT 100",
+                "SELECT * FROM reports WHERE server = ? ORDER BY datetime(timestamp) DESC, id DESC LIMIT 200",
                 (server,),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT * FROM reports ORDER BY datetime(timestamp) DESC, id DESC LIMIT 100",
+                "SELECT * FROM reports ORDER BY datetime(timestamp) DESC, id DESC LIMIT 200",
             ).fetchall()
         items = [dict(row) for row in rows]
     finally:
@@ -141,5 +216,11 @@ async def index(request: Request, server: Optional[str] = None):
 
     return TEMPLATES.TemplateResponse(
         "index.html",
-        {"request": request, "servers": servers, "selected_server": server, "items": items},
+        {
+            "request": request,
+            "servers": servers,
+            "selected_server": server,
+            "items": items,
+            "summaries": summaries,
+        },
     )
