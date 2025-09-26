@@ -177,7 +177,7 @@ upgrade_packages() {
     
     log_message "INFO" "Found $upgradeable_count packages to upgrade"
     
-    if ! $SUDO DEBIAN_FRONTEND=noninteractive apt-get upgrade -y; then
+    if ! $SUDO env DEBIAN_FRONTEND=noninteractive apt-get upgrade -y; then
         log_message "ERROR" "Package upgrade failed"
         return 1
     fi
@@ -189,7 +189,7 @@ full_upgrade() {
     if [[ "$ENABLE_FULL_UPGRADE" == "true" ]]; then
         log_message "INFO" "Performing full distribution upgrade..."
         
-        if ! $SUDO DEBIAN_FRONTEND=noninteractive apt-get full-upgrade -y; then
+        if ! $SUDO env DEBIAN_FRONTEND=noninteractive apt-get full-upgrade -y; then
             log_message "ERROR" "Full upgrade failed"
             return 1
         fi
