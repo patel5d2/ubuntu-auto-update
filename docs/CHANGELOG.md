@@ -47,7 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Contributing guidelines
 - Professional project structure
 
-## [1.0.0] - 2025-09-023
+## [1.0.0] - 2024-01-01
 
 ### Added
 - Basic Ubuntu update script functionality

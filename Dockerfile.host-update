@@ -1,0 +1,51 @@
+# Dockerfile for running the dashboard and updating the host system
+# WARNING: This Dockerfile is designed to update the host system, which is a
+# dangerous operation. Use with extreme caution.
+
+# Build stage
+FROM python:3.11-alpine AS builder
+
+# Install dependencies
+RUN apk add --no-cache \
+    bash \
+    curl \
+    sudo
+
+# Create a non-root user
+RUN adduser -D -s /bin/bash dashboard
+
+# Copy the entire project
+COPY . /app
+
+# Install Python dependencies
+RUN python3 -m venv /app/.venv
+RUN /app/.venv/bin/pip install --no-cache-dir -r /app/requirements.txt
+
+# Set up the entrypoint
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# Final stage
+FROM python:3.11-alpine AS final
+
+# Copy the application from the builder stage
+COPY --from=builder /app /app
+COPY --from=builder /usr/local/bin/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+
+# Create a non-root user
+RUN adduser -D -s /bin/bash dashboard
+
+# Set the user
+USER dashboard
+
+# Set the entrypoint
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+
+# Security scan stage
+FROM aquasec/trivy:latest AS trivy
+
+# Copy the final image
+COPY --from=final / /rootfs
+
+# Run the scan
+RUN trivy rootfs --exit-code 1 --severity HIGH,CRITICAL /rootfs

@@ -219,6 +219,7 @@ SEND_DISCORD_WEBHOOK="https://discord.com/api/webhooks/YOUR_WEBHOOK_URL"
 - **Configuration Validation**: Validates configuration options before execution
 - **Error Isolation**: Failures in non-critical components don't stop the entire process
 - **Secure Notifications**: Webhook URLs and email credentials are handled securely
+- **Dashboard Security**: For production use, it is strongly recommended to run the dashboard behind a reverse proxy (e.g., Nginx, Caddy) that provides HTTPS. This will protect your API key and other sensitive data from being transmitted in plain text.
 
 ## 🔧 Troubleshooting
 
@@ -252,6 +253,29 @@ sudo mkdir -p /var/log/ubuntu-auto-update
 ```bash
 # Run with bash debug mode
 bash -x ./update.sh
+```
+
+## Uninstalling
+
+To uninstall Ubuntu Auto-Update, run the following commands:
+
+```bash
+# Stop and disable the systemd timer
+sudo systemctl stop ubuntu-auto-update.timer
+sudo systemctl disable ubuntu-auto-update.timer
+
+# Remove the systemd files
+sudo rm -f /etc/systemd/system/ubuntu-auto-update.service
+sudo rm -f /etc/systemd/system/ubuntu-auto-update.timer
+sudo systemctl daemon-reload
+
+# Remove the script
+sudo rm -f /usr/local/bin/update.sh
+
+# Remove the configuration and logs (optional)
+sudo rm -rf /etc/ubuntu-auto-update
+sudo rm -rf /var/log/ubuntu-auto-update
+sudo rm -f /etc/logrotate.d/ubuntu-auto-update
 ```
 
 ## 🤝 Contributing
@@ -305,8 +329,22 @@ pip install -r dashboard/requirements.txt
 
 2) Set an API key the server will accept:
 
+The API key is automatically generated and stored in the `.env` file in the root of the project. You can view the API key by running the following command:
+
 ```bash
-export DASHBOARD_API_KEY="<a-strong-random-string>"
+cat .env
+```
+
+Then, you need to set the `DASHBOARD_API_KEY` environment variable to the value of the API key.
+
+```bash
+export DASHBOARD_API_KEY="<your_api_key>"
+```
+
+Alternatively, you can set the API key in your browser's local storage. Open the developer console and run the following command:
+
+```javascript
+localStorage.setItem("apiKey", "<your_api_key>")
 ```
 
 3) Start the server:
@@ -366,11 +404,14 @@ sudo systemctl --no-pager status ubuntu-auto-update-dashboard
 ```
 
 ### Docker deployment
+
+The Dockerfile includes a security scanner that will scan the container for vulnerabilities. If any high or critical vulnerabilities are found, the build will fail. This ensures that the container is free of known vulnerabilities.
+
 Build and run the dashboard with Docker:
 
 ```bash
 # Build image
-docker build -t ubuntu-auto-update-dashboard -f dashboard/Dockerfile .
+docker build -t ubuntu-auto-update-dashboard -f Dockerfile.host-update .
 
 # Run container (port 8080)
 docker run -d \
@@ -379,6 +420,12 @@ docker run -d \
   --name ubuntu-auto-update-dashboard \
   ubuntu-auto-update-dashboard
 ```
+
+**Security Warning:**
+
+This Docker container is designed to update the host system, which is a dangerous operation. It runs with the `--privileged` flag and mounts the host's root filesystem into the container. This effectively breaks the isolation that Docker is designed to provide.
+
+Use this container with extreme caution and only in trusted environments. If possible, it is recommended to use a different method to update the host system, such as running the `update.sh` script directly on the host.
 
 ## 🗺️ Roadmap
 

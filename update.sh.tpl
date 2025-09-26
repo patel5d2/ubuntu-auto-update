@@ -18,8 +18,7 @@ else
 fi
 
 # Configuration
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_FILE="${SCRIPT_DIR}/config.conf"
+CONFIG_FILE="__CONFIG_FILE__"
 LOG_DIR="/var/log/ubuntu-auto-update"
 LOG_FILE="${LOG_DIR}/update.log"
 LOCK_FILE="/tmp/ubuntu-auto-update.lock"
@@ -41,6 +40,7 @@ SEND_DASHBOARD_URL=""
 DASHBOARD_API_KEY=""
 UPDATE_FIRMWARE=false
 QUIET_MODE=false
+DISABLE_CURL=false
 
 # Colors for output
 RED='\033[0;31m'
@@ -59,11 +59,11 @@ log_message() {
     
     if [[ "$QUIET_MODE" != "true" ]] || [[ "$level" == "ERROR" ]]; then
         case $level in
-            "INFO")  echo -e "${GREEN}[INFO]${NC} $message" ;;
-            "WARN")  echo -e "${YELLOW}[WARN]${NC} $message" ;;
-            "ERROR") echo -e "${RED}[ERROR]${NC} $message" >&2 ;;
-            "DEBUG") echo -e "${BLUE}[DEBUG]${NC} $message" ;;
-            *)       echo -e "${PURPLE}[$level]${NC} $message" ;;
+            "INFO")  echo -e "${GREEN}[INFO]${NC} $message" ;; 
+            "WARN")  echo -e "${YELLOW}[WARN]${NC} $message" ;; 
+            "ERROR") echo -e "${RED}[ERROR]${NC} $message" >&2 ;; 
+            "DEBUG") echo -e "${BLUE}[DEBUG]${NC} $message" ;; 
+            *)       echo -e "${PURPLE}[$level]${NC} $message" ;; 
         esac
     fi
     
@@ -89,7 +89,8 @@ setup_logging() {
     if [[ -f "$LOG_FILE" ]] && [[ $(stat -c%s "$LOG_FILE" 2>/dev/null || stat -f%z "$LOG_FILE") -gt $(numfmt --from=iec "$MAX_LOG_SIZE") ]]; then
         $SUDO logrotate -f /etc/logrotate.conf 2>/dev/null || {
             # Manual log rotation if logrotate fails
-            for i in $(seq $((MAX_LOG_FILES-1)) -1 1); do
+            for i in $(seq $((MAX_LOG_FILES-1)) -1 1);
+ do
                 [[ -f "${LOG_FILE}.$i" ]] && $SUDO mv "${LOG_FILE}.$i" "${LOG_FILE}.$((i+1))"
             done
             [[ -f "$LOG_FILE" ]] && $SUDO mv "$LOG_FILE" "${LOG_FILE}.1"
@@ -102,7 +103,73 @@ setup_logging() {
 load_config() {
     if [[ -f "$CONFIG_FILE" ]]; then
         log_message "INFO" "Loading configuration from $CONFIG_FILE"
-        source "$CONFIG_FILE"
+        while IFS='=' read -r key value; do
+            # Remove leading/trailing whitespace from key and value
+            key=$(echo "$key" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            value=$(echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+            # Remove quotes from value
+            value=$(echo "$value" | sed 's/"//g')
+
+            # Skip comments and empty lines
+            if [[ "$key" == "" || "$key" == "#"* ]]; then
+                continue
+            fi
+
+            case "$key" in
+                ENABLE_FULL_UPGRADE)
+                    ENABLE_FULL_UPGRADE="$value"
+                    ;;
+                ENABLE_AUTOREMOVE)
+                    ENABLE_AUTOREMOVE="$value"
+                    ;;
+                ENABLE_AUTOCLEAN)
+                    ENABLE_AUTOCLEAN="$value"
+                    ;;
+                ENABLE_SNAP_UPDATES)
+                    ENABLE_SNAP_UPDATES="$value"
+                    ;;
+                ENABLE_FLATPAK_UPDATES)
+                    ENABLE_FLATPAK_UPDATES="$value"
+                    ;;
+                ENABLE_AUTO_REBOOT)
+                    ENABLE_AUTO_REBOOT="$value"
+                    ;;
+                AUTO_REBOOT_TIME)
+                    AUTO_REBOOT_TIME="$value"
+                    ;;
+                NOTIFICATION_EMAIL)
+                    NOTIFICATION_EMAIL="$value"
+                    ;;
+                SEND_DISCORD_WEBHOOK)
+                    SEND_DISCORD_WEBHOOK="$value"
+                    ;;
+                SEND_DASHBOARD_URL)
+                    SEND_DASHBOARD_URL="$value"
+                    ;;
+                DASHBOARD_API_KEY)
+                    DASHBOARD_API_KEY="$value"
+                    ;;
+                UPDATE_FIRMWARE)
+                    UPDATE_FIRMWARE="$value"
+                    ;;
+                QUIET_MODE)
+                    QUIET_MODE="$value"
+                    ;;
+                DISABLE_CURL)
+                    DISABLE_CURL="$value"
+                    ;;
+                MAX_LOG_SIZE)
+                    MAX_LOG_SIZE="$value"
+                    ;;
+                MAX_LOG_FILES)
+                    MAX_LOG_FILES="$value"
+                    ;;
+                *)
+                    log_message "WARN" "Unknown configuration option: $key"
+                    ;;
+            esac
+        done < "$CONFIG_FILE"
     else
         log_message "WARN" "Configuration file not found at $CONFIG_FILE, using defaults"
     fi
@@ -284,7 +351,7 @@ send_notification() {
     fi
     
     # Discord webhook notification
-    if [[ -n "$SEND_DISCORD_WEBHOOK" ]]; then
+    if [[ -n "$SEND_DISCORD_WEBHOOK" && "$DISABLE_CURL" != "true" ]]; then
         curl -H "Content-Type: application/json" \
              -d "{\"content\":\"$message\"}" \
              "$SEND_DISCORD_WEBHOOK" >/dev/null 2>&1 || \
@@ -298,7 +365,7 @@ post_dashboard_update() {
     local start_time=$3
 
     # Only post if configured
-    if [[ -z "${SEND_DASHBOARD_URL}" ]]; then
+    if [[ -z "${SEND_DASHBOARD_URL}" || "$DISABLE_CURL" == "true" ]]; then
         return 0
     fi
 
@@ -417,32 +484,32 @@ main() {
             -h|--help)
                 show_help
                 exit 0
-                ;;
+                ;; 
             -q|--quiet)
                 QUIET_MODE=true
                 shift
-                ;;
+                ;; 
             -c|--config)
                 CONFIG_FILE="$2"
                 shift 2
-                ;;
+                ;; 
             --no-reboot-check)
                 skip_reboot_check=true
                 shift
-                ;;
+                ;; 
             --dry-run)
                 dry_run=true
                 shift
-                ;;
+                ;; 
             --create-config)
                 create_default_config
                 exit 0
-                ;;
+                ;; 
             *)
                 log_message "ERROR" "Unknown option: $1"
                 show_help
                 exit 1
-                ;;
+                ;; 
         esac
     done
     

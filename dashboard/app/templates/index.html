@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en" data-bs-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ubuntu Auto-Update Dashboard</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    :root { --bs-body-bg: #f8f9fa; }
+    [data-bs-theme="dark"] { --bs-body-bg: #181818; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <nav class="navbar navbar-expand-lg bg-body-tertiary border-bottom">
+      <div class="container-fluid">
+        <a class="navbar-brand" href="#">Ubuntu Auto-Update Dashboard</a>
+        <div class="ms-auto d-flex align-items-center">
+          <div class="form-check form-switch me-3">
+            <input class="form-check-input" type="checkbox" role="switch" id="theme-toggle" @change="toggleTheme" :checked="isDarkMode">
+            <label class="form-check-label" for="theme-toggle">Dark Mode</label>
+          </div>
+          <a href="/config" class="btn btn-sm btn-outline-secondary me-2">Config</a>
+          <a href="/stats" class="btn btn-sm btn-outline-secondary me-2">Stats</a>
+          <button class="btn btn-sm btn-success" @click="runScript">Run Update</button>
+        </div>
+      </div>
+    </nav>
+
+    <main class="container-fluid mt-4">
+      <div class="row">
+        <div class="col-lg-8">
+          <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+              Update History
+              <small class="text-muted">Last updated: {{ lastUpdated }}</small>
+            </div>
+            <div class="card-body">
+              <button class="btn btn-sm btn-danger mb-3" @click="clearReports">Clear Reports</button>
+              <table class="table table-sm table-hover">
+                <thead>
+                  <tr>
+                    <th>Server</th>
+                    <th>Status</th>
+                    <th>Timestamp</th>
+                    <th>Duration</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="report in reports">
+                    <td>{{ report.server }}</td>
+                    <td>
+                      <span :class="['badge', report.status === 'success' ? 'bg-success' : 'bg-danger']">{{ report.status }}</span>
+                    </td>
+                    <td>{{ report.timestamp }}</td>
+                    <td>{{ report.duration_seconds }}s</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        <div class="col-lg-4">
+          <div class="card">
+            <div class="card-header">Settings</div>
+            <div class="card-body">
+              <form @submit.prevent="saveConfig">
+                <div class="mb-3">
+                  <label for="smtp-host" class="form-label">SMTP Host</label>
+                  <input type="text" class="form-control" id="smtp-host" v-model="config.smtp_host">
+                </div>
+                <div class="mb-3">
+                  <label for="smtp-port" class="form-label">SMTP Port</label>
+                  <input type="number" class="form-control" id="smtp-port" v-model="config.smtp_port">
+                </div>
+                <div class="mb-3">
+                  <label for="smtp-user" class="form-label">SMTP User</label>
+                  <input type="text" class="form-control" id="smtp-user" v-model="config.smtp_user">
+                </div>
+                <div class="mb-3">
+                  <label for="smtp-password" class="form-label">SMTP Password</label>
+                  <input type="password" class="form-control" id="smtp-password" v-model="config.smtp_password">
+                </div>
+                <div class="mb-3">
+                  <label for="smtp-from" class="form-label">SMTP From</label>
+                  <input type="text" class="form-control" id="smtp-from" v-model="config.smtp_from">
+                </div>
+                <div class="mb-3">
+                  <label for="discord-webhook-url" class="form-label">Discord Webhook URL</label>
+                  <input type="text" class="form-control" id="discord-webhook-url" v-model="config.discord_webhook_url">
+                </div>
+                <button type="submit" class="btn btn-primary">Save</button>
+              </form>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="https://unpkg.com/vue@3"></script>
+  <script>
+    const { createApp } = Vue
+
+    createApp({
+      data() {
+        return {
+          reports: [],
+          config: {},
+          csrfToken: '',
+          isDarkMode: false,
+          ws: null,
+          lastUpdated: ''
+        }
+      },
+      methods: {
+        toggleTheme() {
+          this.isDarkMode = !this.isDarkMode
+          document.documentElement.setAttribute('data-bs-theme', this.isDarkMode ? 'dark' : 'light')
+        },
+        async fetchReports() {
+          const response = await fetch('/api/v1/reports', { headers: { 'X-API-Key': localStorage.getItem('apiKey') } })
+          this.reports = await response.json()
+          this.lastUpdated = new Date().toLocaleString()
+        },
+        async fetchConfig() {
+          const response = await fetch('/api/v1/config', { headers: { 'X-API-Key': localStorage.getItem('apiKey') } })
+          this.config = await response.json()
+        },
+        async fetchCsrfToken() {
+          const response = await fetch('/api/v1/csrf-token', { headers: { 'X-API-Key': localStorage.getItem('apiKey') } })
+          const data = await response.json()
+          this.csrfToken = data.csrf_token
+        },
+        async saveConfig() {
+          await fetch('/api/v1/config', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', 'X-API-Key': localStorage.getItem('apiKey'), 'X-CSRF-Token': this.csrfToken },
+            body: JSON.stringify(this.config)
+          })
+        },
+        async runScript() {
+          await fetch('/api/v1/script/execute', { method: 'POST', headers: { 'X-API-Key': localStorage.getItem('apiKey'), 'X-CSRF-Token': this.csrfToken } })
+        },
+        async clearReports() {
+          await fetch('/api/v1/reports', { method: 'DELETE', headers: { 'X-API-Key': localStorage.getItem('apiKey'), 'X-CSRF-Token': this.csrfToken } })
+          this.fetchReports()
+        },
+        connectWebSocket() {
+          this.ws = new WebSocket(`ws://${window.location.host}/api/v1/ws?api_key=${localStorage.getItem('apiKey')}`)
+          this.ws.onmessage = (event) => {
+            this.reports.unshift(JSON.parse(event.data))
+            this.lastUpdated = new Date().toLocaleString()
+          }
+        }
+      },
+      mounted() {
+        this.fetchReports()
+        this.fetchConfig()
+        this.fetchCsrfToken()
+        this.connectWebSocket()
+        // Set initial theme
+        this.isDarkMode = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+        document.documentElement.setAttribute('data-bs-theme', this.isDarkMode ? 'dark' : 'light')
+      }
+    }).mount('#app')
+  </script>
+</body>
+</html>

@@ -13,7 +13,6 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-INSTALL_DIR="/usr/local/bin"
 CONFIG_DIR="/etc/ubuntu-auto-update"
 SYSTEMD_DIR="/etc/systemd/system"
 LOG_DIR="/var/log/ubuntu-auto-update"
@@ -59,64 +58,64 @@ check_system() {
     return 0
 }
 
-backup_existing() {
-    local file_path="$1"
-    local backup_path="${file_path}.backup-$(date +%Y%m%d-%H%M%S)"
+validate_dirs() {
+    print_status "Validating directories..."
     
-    if [[ -f "$file_path" ]]; then
-        print_status "Backing up existing file: $file_path"
-        cp "$file_path" "$backup_path"
-        print_success "Backup created: $backup_path"
+    if [[ ! -d "$INSTALL_DIR" || ! -w "$INSTALL_DIR" ]]; then
+        print_error "Installation directory is not valid or not writable: $INSTALL_DIR"
+        exit 1
     fi
+    
+    if [[ ! -d "$CONFIG_DIR" || ! -w "$CONFIG_DIR" ]]; then
+        print_error "Configuration directory is not valid or not writable: $CONFIG_DIR"
+        exit 1
+    fi
+    
+    if [[ ! -d "$SYSTEMD_DIR" || ! -w "$SYSTEMD_DIR" ]]; then
+        print_error "Systemd directory is not valid or not writable: $SYSTEMD_DIR"
+        exit 1
+    fi
+    
+    if [[ ! -d "$LOG_DIR" || ! -w "$LOG_DIR" ]]; then
+        print_error "Log directory is not valid or not writable: $LOG_DIR"
+        exit 1
+    fi
+}
+
+find_install_dir() {
+    print_status "Finding suitable installation directory..."
+    local path_dirs=$(echo $PATH | tr ":" "\n")
+    for dir in $path_dirs; do
+        if [[ -w "$dir" ]]; then
+            INSTALL_DIR="$dir"
+            print_success "Found writable directory in PATH: $INSTALL_DIR"
+            return 0
+        fi
+    done
+
+    print_warning "No writable directory found in PATH. Defaulting to /usr/local/bin"
+    INSTALL_DIR="/usr/local/bin"
+    mkdir -p "$INSTALL_DIR"
 }
 
 install_script() {
     print_status "Installing main update script..."
     
-    if [[ ! -f "update.sh" ]]; then
-        print_error "update.sh not found in current directory"
+    if [[ ! -f "update.sh.tpl" ]]; then
+        print_error "update.sh.tpl not found in current directory"
         exit 1
     fi
     
     # Backup existing installation
     backup_existing "$INSTALL_DIR/update.sh"
     
-    # Copy script
-    cp update.sh "$INSTALL_DIR/update.sh"
+    # Create the script from the template
+    sed "s|__CONFIG_FILE__|$CONFIG_DIR/config.conf|g" update.sh.tpl > "$INSTALL_DIR/update.sh"
+    
     chmod +x "$INSTALL_DIR/update.sh"
     chown root:root "$INSTALL_DIR/update.sh"
     
     print_success "Main script installed to $INSTALL_DIR/update.sh"
-}
-
-install_config() {
-    print_status "Setting up configuration..."
-    
-    # Create config directory
-    mkdir -p "$CONFIG_DIR"
-    
-    # Install default config if it doesn't exist
-    if [[ ! -f "$CONFIG_DIR/config.conf" ]]; then
-        if [[ -f "config.conf" ]]; then
-            cp config.conf "$CONFIG_DIR/config.conf"
-            chmod 644 "$CONFIG_DIR/config.conf"
-            chown root:root "$CONFIG_DIR/config.conf"
-            print_success "Configuration installed to $CONFIG_DIR/config.conf"
-        else
-            print_status "Creating default configuration..."
-            "$INSTALL_DIR/update.sh" --create-config
-            if [[ -f "config.conf" ]]; then
-                mv config.conf "$CONFIG_DIR/config.conf"
-                chmod 644 "$CONFIG_DIR/config.conf"
-                chown root:root "$CONFIG_DIR/config.conf"
-            fi
-        fi
-    else
-        print_success "Configuration already exists at $CONFIG_DIR/config.conf"
-    fi
-    
-    # Update script to use system config location
-    sed -i "s|CONFIG_FILE=\"\${SCRIPT_DIR}/config.conf\"|CONFIG_FILE=\"$CONFIG_DIR/config.conf\"|" "$INSTALL_DIR/update.sh"
 }
 
 install_systemd() {
@@ -199,67 +198,7 @@ EOF
     print_success "Logging configured in $LOG_DIR"
 }
 
-create_uninstaller() {
-    print_status "Creating uninstaller..."
-    
-    cat > "$INSTALL_DIR/ubuntu-auto-update-uninstall.sh" << 'EOF'
-#!/bin/bash
-# Ubuntu Auto-Update Uninstaller
 
-set -e
-
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
-
-if [[ $EUID -ne 0 ]]; then
-    echo -e "${RED}[ERROR]${NC} This script must be run as root (use sudo)"
-    exit 1
-fi
-
-echo -e "${YELLOW}[WARNING]${NC} This will remove Ubuntu Auto-Update from your system"
-read -p "Are you sure you want to continue? [y/N]: " -n 1 -r
-echo
-
-if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-    echo "Uninstall cancelled"
-    exit 0
-fi
-
-echo -e "${GREEN}[INFO]${NC} Stopping and disabling systemd timer..."
-systemctl stop ubuntu-auto-update.timer 2>/dev/null || true
-systemctl disable ubuntu-auto-update.timer 2>/dev/null || true
-
-echo -e "${GREEN}[INFO]${NC} Removing systemd files..."
-rm -f /etc/systemd/system/ubuntu-auto-update.service
-rm -f /etc/systemd/system/ubuntu-auto-update.timer
-systemctl daemon-reload 2>/dev/null || true
-
-echo -e "${GREEN}[INFO]${NC} Removing scripts..."
-rm -f /usr/local/bin/update.sh
-rm -f /usr/local/bin/ubuntu-auto-update-uninstall.sh
-
-echo -e "${GREEN}[INFO]${NC} Removing configuration..."
-read -p "Remove configuration and logs? [y/N]: " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    rm -rf /etc/ubuntu-auto-update
-    rm -rf /var/log/ubuntu-auto-update
-    rm -f /etc/logrotate.d/ubuntu-auto-update
-    echo -e "${GREEN}[INFO]${NC} Configuration and logs removed"
-else
-    echo -e "${GREEN}[INFO]${NC} Configuration and logs preserved"
-fi
-
-echo -e "${GREEN}[SUCCESS]${NC} Ubuntu Auto-Update has been uninstalled"
-EOF
-    
-    chmod +x "$INSTALL_DIR/ubuntu-auto-update-uninstall.sh"
-    chown root:root "$INSTALL_DIR/ubuntu-auto-update-uninstall.sh"
-    
-    print_success "Uninstaller created at $INSTALL_DIR/ubuntu-auto-update-uninstall.sh"
-}
 
 show_summary() {
     print_success "Installation completed successfully!"
@@ -273,8 +212,6 @@ show_summary() {
         echo "• Systemd service: ubuntu-auto-update.service"
         echo "• Systemd timer: ubuntu-auto-update.timer"
     fi
-    
-    echo "• Uninstaller: $INSTALL_DIR/ubuntu-auto-update-uninstall.sh"
     echo
     echo "=== Quick Start ==="
     echo "• Test the script: sudo $INSTALL_DIR/update.sh --dry-run"
@@ -299,11 +236,11 @@ main() {
     check_root
     check_system
     
+    find_install_dir
+    validate_dirs
     install_script
-    install_config
     setup_logging
     install_systemd || print_warning "Systemd integration skipped"
-    create_uninstaller
     
     show_summary
 }
