@@ -5,7 +5,7 @@ All notable changes to the Ubuntu Auto-Update script will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.0.0] - 2024-01-15
+## [2.0.0] - 2025-09-25
 
 ### Added
 - Complete rewrite of the original script with enhanced functionality
@@ -47,7 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Contributing guidelines
 - Professional project structure
 
-## [1.0.0] - 2024-01-01
+## [1.0.0] - 2025-09-023
 
 ### Added
 - Basic Ubuntu update script functionality
