@@ -1,0 +1,255 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: uau-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: uau_db
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/db/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d uau_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - uau-network
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: uau-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - uau-network
+
+  # Go Backend API
+  backend:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    container_name: uau-backend
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+      - "9090:9090"  # Metrics port
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # Database
+      DATABASE_URL: "postgres://user:password@postgres:5432/uau_db?sslmode=disable"
+      
+      # Redis
+      REDIS_URL: "redis://redis:6379"
+      
+      # Authentication
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: password
+      ENROLLMENT_TOKEN: "dev-enrollment-token-12345"
+      JWT_SECRET: "dev-jwt-secret-change-in-production"
+      HMAC_SECRET: "dev-hmac-secret-change-in-production"
+      
+      # Server
+      API_PORT: 8080
+      LOG_LEVEL: debug
+      
+      # Features
+      UAU_FEATURES__ENABLE_METRICS: "true"
+      UAU_FEATURES__ENABLE_PPROF: "true"
+      UAU_LOGGING__DEVELOPMENT: "true"
+      
+      # License (for testing enterprise features)
+      UAU_LICENSING__ENABLED: "false"
+    volumes:
+      - ./backend:/app
+      - backend_logs:/var/log/ubuntu-auto-update
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - uau-network
+
+  # React Web Frontend
+  frontend:
+    build:
+      context: ./web
+      dockerfile: Dockerfile.dev
+    container_name: uau-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    environment:
+      REACT_APP_API_URL: http://localhost:8080
+      REACT_APP_WS_URL: ws://localhost:8080
+      CHOKIDAR_USEPOLLING: "true"  # For file watching in Docker
+    volumes:
+      - ./web:/app
+      - /app/node_modules
+    networks:
+      - uau-network
+
+  # Rust Agent (for testing)
+  agent:
+    build:
+      context: ./agent
+      dockerfile: Dockerfile
+    container_name: uau-agent
+    restart: "no"  # Don't auto-restart for testing
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      BACKEND_URL: "http://backend:8080"
+      ENROLLMENT_TOKEN: "dev-enrollment-token-12345"
+      LOG_LEVEL: debug
+      LOG_FORMAT: json
+      RUST_LOG: debug
+    volumes:
+      - agent_config:/etc/ubuntu-auto-update
+      - agent_logs:/var/log/ubuntu-auto-update
+      - agent_metrics:/var/lib/node_exporter/textfile_collector
+    networks:
+      - uau-network
+    profiles:
+      - agent  # Only start when explicitly requested
+
+  # Agent for actual system updates (privileged)
+  agent-system:
+    build:
+      context: ./agent
+      dockerfile: Dockerfile
+    container_name: uau-agent-system
+    restart: "no"
+    user: root
+    privileged: true
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      BACKEND_URL: "http://backend:8080"
+      ENROLLMENT_TOKEN: "dev-enrollment-token-12345"
+      LOG_LEVEL: info
+      LOG_FORMAT: json
+    volumes:
+      - agent_config:/etc/ubuntu-auto-update
+      - agent_logs:/var/log/ubuntu-auto-update
+      - agent_metrics:/var/lib/node_exporter/textfile_collector
+      - /var/lib/apt:/var/lib/apt
+      - /var/cache/apt:/var/cache/apt
+      - /etc/apt:/etc/apt:ro
+    networks:
+      - uau-network
+    profiles:
+      - system-agent  # Only for actual system updates
+
+  # Prometheus (for metrics collection)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: uau-prometheus
+    restart: unless-stopped
+    ports:
+      - "9091:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+      - agent_metrics:/var/lib/node_exporter/textfile_collector:ro
+    networks:
+      - uau-network
+    profiles:
+      - monitoring
+
+  # Grafana (for visualization)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: uau-grafana
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards
+    networks:
+      - uau-network
+    profiles:
+      - monitoring
+
+  # Nginx (for reverse proxy and SSL termination)
+  nginx:
+    image: nginx:alpine
+    container_name: uau-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infrastructure/nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./infrastructure/nginx/ssl:/etc/nginx/ssl
+      - nginx_logs:/var/log/nginx
+    depends_on:
+      - backend
+      - frontend
+    networks:
+      - uau-network
+    profiles:
+      - proxy
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  backend_logs:
+    driver: local
+  agent_config:
+    driver: local
+  agent_logs:
+    driver: local
+  agent_metrics:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  nginx_logs:
+    driver: local
+
+networks:
+  uau-network:
+    driver: bridge
+    name: ubuntu-auto-update

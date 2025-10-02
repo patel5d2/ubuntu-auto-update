@@ -1,39 +1,46 @@
-# Logs
-*.log
-logs/
+# Rust
+/target
+Cargo.lock
 
-# Runtime data
-*.pid
-*.lock
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
 
-# Backup files
-*.backup
-*.backup-*
+# Node
+node_modules
+dist
+.npm
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-# OS generated files
+# General
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
+*.env
+*.env.local
 
-# Editor files
+# Temporary and test files
+*.txt
+*.tmp
+*.log
+test_*
+*cookies*
+*payload*
+
+# IDE and editor files
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# Local configuration overrides
-local.conf
-development.conf
-
-# Test files
-test_*
-*_test.sh
-
-# Temporary files
-/tmp/
-*.tmp
+# OS generated files
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

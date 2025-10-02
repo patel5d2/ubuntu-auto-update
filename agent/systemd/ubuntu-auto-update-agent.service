@@ -1,0 +1,63 @@
+[Unit]
+Description=Ubuntu Auto-Update Agent
+Documentation=https://github.com/patel5d2/ubuntu-auto-update
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/usr/local/bin/ua-agent
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/local/bin/ua-agent run
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ubuntu-auto-update-agent
+
+# Security settings - enterprise hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHostname=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=no
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+
+# Allow access to specific directories
+ReadWritePaths=/etc/ubuntu-auto-update
+ReadWritePaths=/var/log/ubuntu-auto-update
+ReadWritePaths=/var/lib/node_exporter/textfile_collector
+ReadWritePaths=/var/cache/apt
+ReadWritePaths=/var/lib/apt
+ReadWritePaths=/var/lib/dpkg
+
+# Network access required
+PrivateNetwork=no
+
+# Resource limits
+TimeoutStartSec=3600
+TimeoutStopSec=30
+MemoryMax=512M
+TasksMax=100
+
+# Environment
+Environment="DEBIAN_FRONTEND=noninteractive"
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+# AppArmor profile (if available)
+AppArmorProfile=ubuntu-auto-update-agent
+
+# Restart policy
+Restart=on-failure
+RestartSec=60s
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,45 @@
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: uau_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  backend:
+    build: ./backend
+    ports:
+      - "8082:8080"
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      DATABASE_URL: "postgres://user:password@postgres:5432/uau_db?sslmode=disable"
+      REDIS_URL: "redis://redis:6379"
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: password
+      ENROLLMENT_TOKEN: "your-secret-enrollment-token"
+
+  frontend:
+    build: ./web
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+  # sshd:
+  #   build: ./sshd
+  #   ports:
+  #     - "2222:22"
+
+volumes:
+  postgres_data:
