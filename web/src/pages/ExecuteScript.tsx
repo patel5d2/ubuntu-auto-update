@@ -21,12 +21,8 @@ export function ExecuteScript() {
       setOutput(prev => [...prev, event.data]);
     };
 
-    ws.onclose = () => {
-      console.log("WebSocket connection closed.");
-    };
-
     ws.onerror = (error) => {
-      console.error("WebSocket error:", error);
+      console.error('WebSocket error:', error);
     };
   };
 

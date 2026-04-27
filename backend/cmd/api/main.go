@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -81,29 +82,16 @@ func (app *Application) corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// authMiddleware accepts an auth_token cookie (web UI) or a Bearer Authorization header (agents).
+// It validates the token against the in-memory store and attaches the user to the request context.
 func (app *Application) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var tokenString string
-
-		// Check for auth cookie for web UI
-		if cookie, err := r.Cookie("auth_token"); err == nil {
-			tokenString = cookie.Value
-		}
-
-		// Check for Authorization header for agent
-		if tokenString == "" {
-			authHeader := r.Header.Get("Authorization")
-			if strings.HasPrefix(authHeader, "Bearer ") {
-				tokenString = strings.TrimPrefix(authHeader, "Bearer ")
-			}
-		}
-
+		tokenString := extractToken(r, app.AuthConfig.CookieName)
 		if tokenString == "" {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
 
-		// Validate token against the token store
 		username, valid := app.TokenStore.ValidateToken(tokenString)
 		if !valid {
 			http.Error(w, "Unauthorized: invalid or expired token", http.StatusUnauthorized)
@@ -111,8 +99,24 @@ func (app *Application) authMiddleware(next http.Handler) http.Handler {
 		}
 
 		log.Debugf("Authenticated request from user: %s", username)
-		next.ServeHTTP(w, r)
+		ctx := context.WithValue(r.Context(), middleware.UserContextKey, &middleware.User{
+			Username: username,
+			Role:     "admin",
+		})
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// extractToken returns the auth token from the cookie or the Bearer Authorization header, or "".
+func extractToken(r *http.Request, cookieName string) string {
+	if cookie, err := r.Cookie(cookieName); err == nil && cookie.Value != "" {
+		return cookie.Value
+	}
+	authHeader := r.Header.Get("Authorization")
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		return strings.TrimPrefix(authHeader, "Bearer ")
+	}
+	return ""
 }
 
 func main() {
@@ -146,6 +150,7 @@ func main() {
 	r.HandleFunc("/api/v1/health", app.handleHealth).Methods(http.MethodGet)
 	r.HandleFunc("/api/v1/enroll", app.handleEnroll).Methods(http.MethodPost)
 	r.HandleFunc("/api/v1/login", app.handleLogin).Methods(http.MethodPost, http.MethodOptions)
+	r.HandleFunc("/api/v1/logout", app.handleLogout).Methods(http.MethodPost, http.MethodOptions)
 
 	api := r.PathPrefix("/api/v1").Subrouter()
 	api.Use(app.authMiddleware)
@@ -251,40 +256,57 @@ func (app *Application) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	var req LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	adminUsername := os.Getenv("ADMIN_USERNAME")
 	adminPassword := os.Getenv("ADMIN_PASSWORD")
 
-	// SECURITY: Do NOT log credentials
+	// SECURITY: Do NOT log credential values, only the misconfiguration.
 	if adminUsername == "" || adminPassword == "" {
 		log.Error("ADMIN_USERNAME or ADMIN_PASSWORD environment variables not set")
-		http.Error(w, "Authentication not configured", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, "Authentication not configured on server")
 		return
 	}
 
-	if req.Username == adminUsername && req.Password == adminPassword {
-		authToken, err := middleware.GenerateSecureToken()
-		if err != nil {
-			log.Errorf("Failed to generate token: %v", err)
-			http.Error(w, "Failed to generate token", http.StatusInternalServerError)
-			return
-		}
-
-		// Store token with 24-hour expiry
-		app.TokenStore.StoreToken(authToken, req.Username, 24*time.Hour)
-
-		// Set secure cookie
-		middleware.SetAuthCookie(w, app.AuthConfig, authToken)
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"token": authToken})
-	} else {
-		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+	// Constant-time comparison to avoid timing attacks against the admin credential.
+	userOK := subtle.ConstantTimeCompare([]byte(req.Username), []byte(adminUsername)) == 1
+	passOK := subtle.ConstantTimeCompare([]byte(req.Password), []byte(adminPassword)) == 1
+	if !userOK || !passOK {
+		writeJSONError(w, http.StatusUnauthorized, "Invalid credentials")
+		return
 	}
+
+	authToken, err := middleware.GenerateSecureToken()
+	if err != nil {
+		log.Errorf("Failed to generate token: %v", err)
+		writeJSONError(w, http.StatusInternalServerError, "Failed to generate token")
+		return
+	}
+
+	app.TokenStore.StoreToken(authToken, req.Username, 24*time.Hour)
+	middleware.SetAuthCookie(w, app.AuthConfig, authToken)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"token": authToken})
+}
+
+func writeJSONError(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(map[string]string{"error": message})
+}
+
+// handleLogout invalidates the caller's token (if present) and clears the auth cookie.
+// Always returns 200 — clients should treat logout as best-effort.
+func (app *Application) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if token := extractToken(r, app.AuthConfig.CookieName); token != "" {
+		app.TokenStore.RemoveToken(token)
+	}
+	middleware.ClearAuthCookie(w, app.AuthConfig)
+	w.WriteHeader(http.StatusOK)
 }
 
 func (app *Application) handleReport(w http.ResponseWriter, r *http.Request) {

@@ -2,13 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { formatDistanceToNow } from 'date-fns';
 import { apiGet } from '../api';
-
-interface Host {
-  id: number;
-  hostname: string;
-  last_seen: string;
-  error: string | null;
-}
+import type { Host } from '../types';
 
 export function HostList() {
   const [hosts, setHosts] = useState<Host[]>([]);
@@ -22,15 +16,13 @@ export function HostList() {
         setFetchError('');
       })
       .catch(err => {
-        console.error("Failed to fetch hosts:", err);
+        console.error('Failed to fetch hosts:', err);
         setFetchError('Failed to load hosts. Is the backend running?');
       })
       .finally(() => setLoading(false));
   }, []);
 
-  if (loading) {
-    return <div aria-busy="true">Loading hosts...</div>;
-  }
+  if (loading) return <div aria-busy="true">Loading hosts...</div>;
 
   if (fetchError) {
     return (
@@ -59,7 +51,11 @@ export function HostList() {
             <tr key={host.id}>
               <td><Link to={`/hosts/${host.id}`}>{host.hostname}</Link></td>
               <td>{formatDistanceToNow(new Date(host.last_seen), { addSuffix: true })}</td>
-              <td>{host.error ? <span style={{ color: 'var(--pico-color-red-500)' }}>Error</span> : <span style={{ color: 'var(--pico-color-green-500)' }}>OK</span>}</td>
+              <td>
+                {host.error
+                  ? <span style={{ color: 'var(--pico-color-red-500)' }}>Error</span>
+                  : <span style={{ color: 'var(--pico-color-green-500)' }}>OK</span>}
+              </td>
             </tr>
           ))}
           {hosts.length === 0 && (

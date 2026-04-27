@@ -10,16 +10,16 @@ export function LoginPage() {
     setError('');
     setIsLoading(true);
 
-    const form = event.currentTarget;
-    const username = (form.elements.namedItem('username') as HTMLInputElement).value;
-    const password = (form.elements.namedItem('password') as HTMLInputElement).value;
+    const data = new FormData(event.currentTarget);
+    const username = String(data.get('username') ?? '');
+    const password = String(data.get('password') ?? '');
 
     try {
       await apiLogin(username, password);
       window.location.href = '/';
     } catch (err) {
-      console.error('Login error:', err);
-      setError('Invalid username or password. Please try again.');
+      const message = err instanceof Error ? err.message : 'Login failed';
+      setError(message);
     } finally {
       setIsLoading(false);
     }

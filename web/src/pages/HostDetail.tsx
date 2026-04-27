@@ -1,86 +1,76 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { apiGet, apiPost, createWebSocket } from '../api';
+import type { Host } from '../types';
 
-interface Host {
-  id: number;
-  hostname: string;
-  ssh_user: string;
-  update_output: string;
-  upgrade_output: string;
-  error: string | null;
-}
+type SaveKeyState =
+  | { kind: 'idle' }
+  | { kind: 'saving' }
+  | { kind: 'success'; message: string }
+  | { kind: 'error'; message: string };
 
 export function HostDetail() {
   const { hostId } = useParams<{ hostId: string }>();
   const [host, setHost] = useState<Host | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [updateOutput, setUpdateOutput] = useState<string[]>([]);
+  const [saveKey, setSaveKey] = useState<SaveKeyState>({ kind: 'idle' });
 
   useEffect(() => {
-    if (hostId) {
-      apiGet<Host>(`/api/v1/hosts/${hostId}`)
-        .then(setHost)
-        .catch(err => console.error("Failed to fetch host details:", err));
-    }
+    if (!hostId) return;
+    apiGet<Host>(`/api/v1/hosts/${hostId}`)
+      .then(setHost)
+      .catch(err => console.error('Failed to fetch host details:', err));
   }, [hostId]);
 
-  const handleRunUpdate = () => {
+  const handlePreviewUpdate = () => {
     setIsModalOpen(true);
     setUpdateOutput([]);
-    const ws = createWebSocket(`/api/v1/hosts/${hostId}/run-update`);
-
-    ws.onmessage = (event) => {
-      setUpdateOutput(prev => [...prev, event.data]);
-    };
-
-    ws.onclose = () => {
-      console.log("WebSocket connection closed.");
-    };
-
-    ws.onerror = (error) => {
-      console.error("WebSocket error:", error);
-    };
+    const ws = createWebSocket(`/api/v1/hosts/${hostId}/preview-updates`);
+    ws.onmessage = (event) => setUpdateOutput(prev => [...prev, event.data]);
+    ws.onerror = (error) => console.error('WebSocket error:', error);
   };
 
   const handleSaveKey = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const form = event.currentTarget;
-    const sshUser = (form.elements.namedItem('sshUser') as HTMLInputElement).value;
-    const privateKey = (form.elements.namedItem('privateKey') as HTMLTextAreaElement).value;
+    setSaveKey({ kind: 'saving' });
+
+    const data = new FormData(event.currentTarget);
+    const sshUser = String(data.get('sshUser') ?? '');
+    const privateKey = String(data.get('privateKey') ?? '');
 
     try {
       await apiPost(`/api/v1/hosts/${hostId}/ssh-key`, {
         ssh_user: sshUser,
         private_key: privateKey,
       });
-      alert('Key saved successfully!');
+      setSaveKey({ kind: 'success', message: 'Key saved successfully.' });
     } catch (err) {
-      console.error('Failed to save key:', err);
-      alert('Failed to save key.');
+      const message = err instanceof Error ? err.message : 'Failed to save key.';
+      setSaveKey({ kind: 'error', message });
     }
   };
 
-  if (!host) {
-    return <div aria-busy="true">Loading host details...</div>;
-  }
+  if (!host) return <div aria-busy="true">Loading host details...</div>;
 
   return (
     <article>
       <header>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
           <h2 style={{ margin: 0 }}>{host.hostname}</h2>
-          <button onClick={handleRunUpdate} style={{ width: 'auto' }}>Run Update</button>
-          <Link to={`/hosts/${hostId}/execute-script`}><button style={{ width: 'auto' }}>Execute Script</button></Link>
+          <button onClick={handlePreviewUpdate} style={{ width: 'auto' }}>Preview Updates</button>
+          <Link to={`/hosts/${hostId}/execute-script`}>
+            <button style={{ width: 'auto' }}>Execute Script</button>
+          </Link>
         </div>
       </header>
       <details>
         <summary>Update Output (apt-get update)</summary>
-        <pre><code>{host.update_output || "No output captured."}</code></pre>
+        <pre><code>{host.update_output || 'No output captured.'}</code></pre>
       </details>
       <details open>
         <summary>Upgrade Output (apt-get --dry-run upgrade)</summary>
-        <pre><code>{host.upgrade_output || "No output captured."}</code></pre>
+        <pre><code>{host.upgrade_output || 'No output captured.'}</code></pre>
       </details>
 
       {host.error && (
@@ -103,7 +93,15 @@ export function HostDetail() {
               <textarea id="privateKey" name="privateKey" placeholder="Private Key" required rows={10} />
             </label>
           </div>
-          <button type="submit">Save Key</button>
+          <button type="submit" disabled={saveKey.kind === 'saving'}>
+            {saveKey.kind === 'saving' ? 'Saving...' : 'Save Key'}
+          </button>
+          {saveKey.kind === 'success' && (
+            <aside role="status" style={{ color: 'var(--pico-color-green-500)' }}>{saveKey.message}</aside>
+          )}
+          {saveKey.kind === 'error' && (
+            <aside role="alert" style={{ color: 'var(--pico-color-red-500)' }}>{saveKey.message}</aside>
+          )}
         </form>
       </details>
 
@@ -111,7 +109,7 @@ export function HostDetail() {
         <dialog open>
           <article>
             <header>
-              <a href="#" aria-label="Close" className="close" onClick={() => setIsModalOpen(false)}></a>
+              <a href="#" aria-label="Close" className="close" onClick={(e) => { e.preventDefault(); setIsModalOpen(false); }}></a>
               Update Output
             </header>
             <pre><code>{updateOutput.join('\n')}</code></pre>
