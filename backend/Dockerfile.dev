@@ -1,0 +1,39 @@
+# Development Dockerfile for Go Backend
+FROM golang:1.22-alpine AS base
+
+# Install system dependencies
+RUN apk add --no-cache \
+    git \
+    ca-certificates \
+    curl \
+    postgresql-client \
+    && rm -rf /var/cache/apk/*
+
+# Install development tools
+RUN go install github.com/cosmtrek/air@latest && \
+    go install github.com/golang-migrate/migrate/v4/cmd/migrate@latest
+
+# Set working directory
+WORKDIR /app
+
+# Copy go mod files
+COPY go.mod go.sum ./
+
+# Download dependencies
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Create necessary directories
+RUN mkdir -p /var/log/ubuntu-auto-update
+
+# Expose ports
+EXPOSE 8080 9090
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8080/api/v1/health || exit 1
+
+# Development command with hot reload
+CMD ["air", "-c", ".air.toml"]

@@ -1,0 +1,10 @@
+/Users/dharminpatel/ubuntu-auto-update/agent/target/debug/deps/sqlite-1dd4158efc746133.d: /Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlite-0.32.0/src/lib.rs /Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlite-0.32.0/src/error.rs /Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlite-0.32.0/src/value.rs /Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlite-0.32.0/src/connection.rs /Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlite-0.32.0/src/cursor.rs /Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlite-0.32.0/src/statement.rs
+
+/Users/dharminpatel/ubuntu-auto-update/agent/target/debug/deps/libsqlite-1dd4158efc746133.rmeta: /Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlite-0.32.0/src/lib.rs /Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlite-0.32.0/src/error.rs /Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlite-0.32.0/src/value.rs /Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlite-0.32.0/src/connection.rs /Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlite-0.32.0/src/cursor.rs /Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlite-0.32.0/src/statement.rs
+
+/Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlite-0.32.0/src/lib.rs:
+/Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlite-0.32.0/src/error.rs:
+/Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlite-0.32.0/src/value.rs:
+/Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlite-0.32.0/src/connection.rs:
+/Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlite-0.32.0/src/cursor.rs:
+/Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlite-0.32.0/src/statement.rs:

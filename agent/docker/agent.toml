@@ -1,0 +1,49 @@
+# Ubuntu Auto-Update Agent Configuration
+# This is a template configuration file for containerized deployments
+
+[backend]
+url = "${BACKEND_URL:-http://localhost:8080}"
+timeout_seconds = 30
+retry_attempts = 3
+retry_delay_seconds = 5
+
+[security]
+api_key_file = "/etc/ubuntu-auto-update/auth.token"
+cert_file = "/etc/ubuntu-auto-update/client.crt"
+key_file = "/etc/ubuntu-auto-update/client.key"
+ca_file = "/etc/ubuntu-auto-update/ca.crt"
+hmac_secret_file = "/etc/ubuntu-auto-update/hmac.key"
+verify_server_cert = true
+use_mtls = false
+
+[updates]
+dry_run = false
+auto_reboot = false
+reboot_delay_minutes = 5
+maintenance_window_start = "02:00"
+maintenance_window_end = "04:00"
+excluded_packages = []
+
+[updates.update_sources]
+apt = true
+snap = true
+flatpak = false
+firmware = false
+
+[logging]
+level = "${LOG_LEVEL:-info}"
+format = "${LOG_FORMAT:-json}"
+file = "/var/log/ubuntu-auto-update/agent.log"
+max_size_mb = 100
+max_files = 5
+
+[metrics]
+enabled = true
+port = 9100
+textfile_path = "/var/lib/node_exporter/textfile_collector"
+collect_system_metrics = true
+
+[enrollment]
+token_file = "/etc/ubuntu-auto-update/enrollment.token"
+host_id_file = "/etc/ubuntu-auto-update/host.id"
+enrollment_url = "${BACKEND_URL:-http://localhost:8080}/api/v1/enroll"
