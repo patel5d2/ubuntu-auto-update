@@ -2,15 +2,15 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
@@ -21,12 +21,18 @@ import (
 	"golang.org/x/crypto/ssh/knownhosts"
 	"ubuntu-auto-update/backend/pkg/config"
 	"ubuntu-auto-update/backend/pkg/db"
+	"ubuntu-auto-update/backend/pkg/middleware"
 	"ubuntu-auto-update/backend/pkg/models"
 	"ubuntu-auto-update/backend/pkg/webhook"
 )
 
+// maxRequestBodySize limits POST request bodies to 1MB
+const maxRequestBodySize = 1 << 20
+
 type Application struct {
-	DB *pgxpool.Pool
+	DB         *pgxpool.Pool
+	TokenStore *middleware.TokenStore
+	AuthConfig *middleware.AuthConfig
 }
 
 func (app *Application) sendWebhook(event string, payload interface{}) {
@@ -37,14 +43,30 @@ func (app *Application) sendWebhook(event string, payload interface{}) {
 	}
 
 	for _, wh := range webhooks {
-		webhook.Send(wh.URL, payload)
+		if err := webhook.Send(wh.URL, payload); err != nil {
+			log.Errorf("Failed to deliver webhook to %s: %v", wh.URL, err)
+		}
 	}
 }
 
 func (app *Application) corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Set CORS headers
-		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:5173")
+		// Get allowed origins from environment, default to localhost dev servers
+		allowedOrigins := os.Getenv("CORS_ALLOWED_ORIGINS")
+		if allowedOrigins == "" {
+			allowedOrigins = "http://localhost:5173,http://localhost:3000"
+		}
+
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			for _, allowed := range strings.Split(allowedOrigins, ",") {
+				if strings.TrimSpace(allowed) == origin || strings.TrimSpace(allowed) == "*" {
+					w.Header().Set("Access-Control-Allow-Origin", origin)
+					break
+				}
+			}
+		}
+
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
@@ -61,34 +83,41 @@ func (app *Application) corsMiddleware(next http.Handler) http.Handler {
 
 func (app *Application) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var tokenString string
+
 		// Check for auth cookie for web UI
-		if _, err := r.Cookie("auth_token"); err == nil {
-			next.ServeHTTP(w, r)
-			return
+		if cookie, err := r.Cookie("auth_token"); err == nil {
+			tokenString = cookie.Value
 		}
 
 		// Check for Authorization header for agent
-		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" {
+		if tokenString == "" {
+			authHeader := r.Header.Get("Authorization")
+			if strings.HasPrefix(authHeader, "Bearer ") {
+				tokenString = strings.TrimPrefix(authHeader, "Bearer ")
+			}
+		}
+
+		if tokenString == "" {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
 
-		// For now, just check if the token is not empty
-		// TODO: Implement proper token validation
-		token := strings.TrimPrefix(authHeader, "Bearer ")
-		if token == "" {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		// Validate token against the token store
+		username, valid := app.TokenStore.ValidateToken(tokenString)
+		if !valid {
+			http.Error(w, "Unauthorized: invalid or expired token", http.StatusUnauthorized)
 			return
 		}
 
+		log.Debugf("Authenticated request from user: %s", username)
 		next.ServeHTTP(w, r)
 	})
 }
 
 func main() {
 	if err := config.Load(); err != nil {
-		log.Fatalf("Failed to load configuration: %v", err)
+		log.Warnf("Config loading: %v (continuing with env vars)", err)
 	}
 
 	log.Info("Starting application...")
@@ -100,8 +129,16 @@ func main() {
 	}
 	defer dbPool.Close()
 
+	tokenStore := middleware.GetTokenStore()
+	authConfig := middleware.NewAuthConfig()
+
+	// Start background token cleanup every 5 minutes
+	middleware.StartTokenCleanup(tokenStore, 5*time.Minute)
+
 	app := &Application{
-		DB: dbPool,
+		DB:         dbPool,
+		TokenStore: tokenStore,
+		AuthConfig: authConfig,
 	}
 
 	r := mux.NewRouter()
@@ -125,10 +162,35 @@ func main() {
 		port = "8080"
 	}
 
-	log.Info("Starting server on :" + port)
-	if err := http.ListenAndServe(":"+port, r); err != nil {
+	// Use http.Server with proper timeouts for production readiness
+	srv := &http.Server{
+		Addr:         ":" + port,
+		Handler:      r,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+
+	// Graceful shutdown
+	go func() {
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+		sig := <-sigChan
+		log.Infof("Received signal %v, shutting down gracefully...", sig)
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Errorf("Server shutdown error: %v", err)
+		}
+	}()
+
+	log.Infof("Starting server on :%s", port)
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
+	log.Info("Server stopped")
 }
 
 type LoginRequest struct {
@@ -137,10 +199,7 @@ type LoginRequest struct {
 }
 
 func (app *Application) handleEnroll(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 
 	var req struct {
 		EnrollmentToken string `json:"enrollment_token"`
@@ -149,6 +208,13 @@ func (app *Application) handleEnroll(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Validate hostname
+	req.Hostname = strings.TrimSpace(req.Hostname)
+	if req.Hostname == "" {
+		http.Error(w, "Hostname cannot be empty", http.StatusBadRequest)
 		return
 	}
 
@@ -164,22 +230,24 @@ func (app *Application) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Generate a new random authentication token
-	tokenBytes := make([]byte, 32)
-	if _, err := rand.Read(tokenBytes); err != nil {
+	authToken, err := middleware.GenerateSecureToken()
+	if err != nil {
 		log.Errorf("Failed to generate token: %v", err)
 		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
 		return
 	}
-	authToken := hex.EncodeToString(tokenBytes)
 
-	// Store the token in the database
-	// TODO: Implement token storage
+	// Store the token for agent authentication (long-lived: 365 days)
+	app.TokenStore.StoreToken(authToken, "agent:"+req.Hostname, 365*24*time.Hour)
+
+	log.Infof("Agent enrolled successfully: %s", req.Hostname)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"token": authToken})
 }
 
 func (app *Application) handleLogin(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 
 	var req LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -189,33 +257,38 @@ func (app *Application) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	adminUsername := os.Getenv("ADMIN_USERNAME")
 	adminPassword := os.Getenv("ADMIN_PASSWORD")
-	log.Infof("Admin username: %s, Admin password: %s", adminUsername, adminPassword)
+
+	// SECURITY: Do NOT log credentials
+	if adminUsername == "" || adminPassword == "" {
+		log.Error("ADMIN_USERNAME or ADMIN_PASSWORD environment variables not set")
+		http.Error(w, "Authentication not configured", http.StatusInternalServerError)
+		return
+	}
 
 	if req.Username == adminUsername && req.Password == adminPassword {
-		tokenBytes := make([]byte, 32)
-		if _, err := rand.Read(tokenBytes); err != nil {
+		authToken, err := middleware.GenerateSecureToken()
+		if err != nil {
 			log.Errorf("Failed to generate token: %v", err)
 			http.Error(w, "Failed to generate token", http.StatusInternalServerError)
 			return
 		}
-		authToken := hex.EncodeToString(tokenBytes)
 
-		cookie := http.Cookie{
-			Name:     "auth_token",
-			Value:    authToken,
-			Path:     "/",
-			HttpOnly: false, // Allow JavaScript access for development
-			Secure:   false, // Allow HTTP for development
-			SameSite: http.SameSiteLaxMode,
-		}
-		http.SetCookie(w, &cookie)
+		// Store token with 24-hour expiry
+		app.TokenStore.StoreToken(authToken, req.Username, 24*time.Hour)
+
+		// Set secure cookie
+		middleware.SetAuthCookie(w, app.AuthConfig, authToken)
+
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"token": authToken})
 	} else {
 		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
 	}
 }
 
 func (app *Application) handleReport(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 
 	var report models.HostReport
 	if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
@@ -223,6 +296,7 @@ func (app *Application) handleReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	report.Hostname = strings.TrimSpace(report.Hostname)
 	if report.Hostname == "" {
 		http.Error(w, "Hostname cannot be empty", http.StatusBadRequest)
 		return
@@ -242,7 +316,6 @@ func (app *Application) handleReport(w http.ResponseWriter, r *http.Request) {
 }
 
 func (app *Application) handleListHosts(w http.ResponseWriter, r *http.Request) {
-
 	hosts, err := db.ListHosts(r.Context(), app.DB)
 	if err != nil {
 		log.Errorf("Failed to list hosts: %v", err)
@@ -284,13 +357,45 @@ func (app *Application) handleGetHost(w http.ResponseWriter, r *http.Request) {
 }
 
 var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
+	CheckOrigin: func(r *http.Request) bool {
+		// Validate WebSocket origin against allowed origins
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			return false
+		}
+
+		allowedOrigins := os.Getenv("CORS_ALLOWED_ORIGINS")
+		if allowedOrigins == "" {
+			allowedOrigins = "http://localhost:5173,http://localhost:3000"
+		}
+
+		for _, allowed := range strings.Split(allowedOrigins, ",") {
+			if strings.TrimSpace(allowed) == origin || strings.TrimSpace(allowed) == "*" {
+				return true
+			}
+		}
+		return false
+	},
 }
 
 func (app *Application) handleAddWebhook(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+
 	var req models.Webhook
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Validate webhook URL and event
+	req.URL = strings.TrimSpace(req.URL)
+	req.Event = strings.TrimSpace(req.Event)
+	if req.URL == "" || req.Event == "" {
+		http.Error(w, "URL and event are required", http.StatusBadRequest)
+		return
+	}
+	if !strings.HasPrefix(req.URL, "http://") && !strings.HasPrefix(req.URL, "https://") {
+		http.Error(w, "URL must start with http:// or https://", http.StatusBadRequest)
 		return
 	}
 
@@ -303,55 +408,9 @@ func (app *Application) handleAddWebhook(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(http.StatusCreated)
 }
 
-func (app *Application) handleScanHostKey(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	idStr, ok := vars["id"]
-	if !ok {
-		http.Error(w, "Host ID not found in URL", http.StatusBadRequest)
-		return
-	}
-
-	id, err := strconv.Atoi(idStr)
-	if err != nil {
-		http.Error(w, "Invalid host ID", http.StatusBadRequest)
-		return
-	}
-
-	host, err := db.GetHost(r.Context(), app.DB, int32(id))
-	if err != nil {
-		log.Errorf("Failed to get host: %v", err)
-		http.Error(w, "Host not found", http.StatusNotFound)
-		return
-	}
-
-	// Scan host key
-	cmd := exec.Command("ssh-keyscan", "-t", "rsa", host.Hostname)
-	output, err := cmd.Output()
-	if err != nil {
-		log.Errorf("Failed to scan host key: %v", err)
-		http.Error(w, "Failed to scan host key", http.StatusInternalServerError)
-		return
-	}
-
-	// Add host key to known_hosts file
-	f, err := os.OpenFile("known_hosts", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		log.Errorf("Failed to open known_hosts file: %v", err)
-		http.Error(w, "Failed to open known_hosts file", http.StatusInternalServerError)
-		return
-	}
-	defer f.Close()
-
-	if _, err := f.Write(output); err != nil {
-		log.Errorf("Failed to write to known_hosts file: %v", err)
-		http.Error(w, "Failed to write to known_hosts file", http.StatusInternalServerError)
-		return
-	}
-
-	w.WriteHeader(http.StatusOK)
-}
-
 func (app *Application) handleAddSSHKey(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+
 	vars := mux.Vars(r)
 	idStr, ok := vars["id"]
 	if !ok {
@@ -372,6 +431,13 @@ func (app *Application) handleAddSSHKey(w http.ResponseWriter, r *http.Request) 
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	req.SshUser = strings.TrimSpace(req.SshUser)
+	req.PrivateKey = strings.TrimSpace(req.PrivateKey)
+	if req.SshUser == "" || req.PrivateKey == "" {
+		http.Error(w, "ssh_user and private_key are required", http.StatusBadRequest)
 		return
 	}
 
@@ -448,15 +514,16 @@ func (app *Application) handleExecuteScript(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Establish SSH connection
-	config := &ssh.ClientConfig{
-		User: host.SshUser, // or get the user from the request
+	sshConfig := &ssh.ClientConfig{
+		User: host.SshUser,
 		Auth: []ssh.AuthMethod{
 			ssh.PublicKeys(signer),
 		},
 		HostKeyCallback: hostKeyCallback,
+		Timeout:         30 * time.Second,
 	}
 
-	sshClient, err := ssh.Dial("tcp", host.Hostname+":22", config)
+	sshClient, err := ssh.Dial("tcp", host.Hostname+":22", sshConfig)
 	if err != nil {
 		log.Errorf("Failed to dial SSH: %v", err)
 		conn.WriteMessage(websocket.TextMessage, []byte("Failed to dial SSH: "+err.Error()))
@@ -535,15 +602,16 @@ func (app *Application) handleRunUpdate(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Establish SSH connection
-	config := &ssh.ClientConfig{
-		User: host.SshUser, // or get the user from the request
+	sshConfig := &ssh.ClientConfig{
+		User: host.SshUser,
 		Auth: []ssh.AuthMethod{
 			ssh.PublicKeys(signer),
 		},
 		HostKeyCallback: hostKeyCallback,
+		Timeout:         30 * time.Second,
 	}
 
-	sshClient, err := ssh.Dial("tcp", host.Hostname+":22", config)
+	sshClient, err := ssh.Dial("tcp", host.Hostname+":22", sshConfig)
 	if err != nil {
 		log.Errorf("Failed to dial SSH: %v", err)
 		db.UpsertHost(r.Context(), app.DB, host.Hostname, host.SshUser, "", "", fmt.Sprintf("Failed to dial SSH: %v", err))
@@ -596,9 +664,9 @@ func (app *Application) handleHealth(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status": "unhealthy",
-			"database": "disconnected",
-			"timestamp": "now",
+			"status":    "unhealthy",
+			"database":  "disconnected",
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
 		})
 		return
 	}
@@ -606,9 +674,9 @@ func (app *Application) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status": "healthy",
-		"database": "connected",
-		"version": "1.0.0",
-		"timestamp": "now",
+		"status":    "healthy",
+		"database":  "connected",
+		"version":   "1.0.0",
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	})
 }

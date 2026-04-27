@@ -8,18 +8,11 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	log "github.com/sirupsen/logrus"
 )
-
-type Claims struct {
-	UserID   string `json:"user_id"`
-	Username string `json:"username"`
-	Role     string `json:"role"`
-	jwt.RegisteredClaims
-}
 
 type contextKey string
 
@@ -35,137 +28,115 @@ type User struct {
 
 // AuthConfig holds authentication configuration
 type AuthConfig struct {
-	JWTSecret       string
-	TokenExpiry     time.Duration
-	CookieName      string
-	RequiredRole    string
+	CookieName   string
+	RequiredRole string
 }
 
 // NewAuthConfig creates auth config from environment
 func NewAuthConfig() *AuthConfig {
-	jwtSecret := os.Getenv("JWT_SECRET")
-	if jwtSecret == "" {
-		// Generate a random secret for development
-		bytes := make([]byte, 32)
-		if _, err := rand.Read(bytes); err != nil {
-			panic("Failed to generate JWT secret")
-		}
-		jwtSecret = hex.EncodeToString(bytes)
-		log.Warn("No JWT_SECRET environment variable set, using generated secret")
-	}
-
 	return &AuthConfig{
-		JWTSecret:   jwtSecret,
-		TokenExpiry: 24 * time.Hour,
-		CookieName:  "auth_token",
+		CookieName: "auth_token",
 	}
 }
 
-// JWTMiddleware validates JWT tokens
-func JWTMiddleware(config *AuthConfig) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Try to get token from cookie first (for web UI)
-			var tokenString string
-			if cookie, err := r.Cookie(config.CookieName); err == nil {
-				tokenString = cookie.Value
-			}
+// TokenStore provides in-memory token storage with expiry
+type TokenStore struct {
+	mu     sync.RWMutex
+	tokens map[string]TokenEntry
+}
 
-			// If no cookie, try Authorization header (for API clients)
-			if tokenString == "" {
-				authHeader := r.Header.Get("Authorization")
-				if strings.HasPrefix(authHeader, "Bearer ") {
-					tokenString = strings.TrimPrefix(authHeader, "Bearer ")
-				}
-			}
+type TokenEntry struct {
+	Username  string
+	ExpiresAt time.Time
+}
 
-			if tokenString == "" {
-				SendAuthError(w, "No authentication token provided")
-				return
-			}
+var globalTokenStore = &TokenStore{
+	tokens: make(map[string]TokenEntry),
+}
 
-			// Parse and validate token
-			claims := &Claims{}
-			token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
-				// Validate signing method
-				if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-					return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-				}
-				return []byte(config.JWTSecret), nil
-			})
+// GetTokenStore returns the global token store
+func GetTokenStore() *TokenStore {
+	return globalTokenStore
+}
 
-			if err != nil || !token.Valid {
-				log.WithError(err).Warn("Invalid JWT token")
-				SendAuthError(w, "Invalid authentication token")
-				return
-			}
-
-			// Check token expiry
-			if claims.ExpiresAt != nil && claims.ExpiresAt.Before(time.Now()) {
-				SendAuthError(w, "Authentication token expired")
-				return
-			}
-
-			// Check required role if specified
-			if config.RequiredRole != "" && claims.Role != config.RequiredRole && claims.Role != "admin" {
-				SendForbiddenError(w, "Insufficient privileges")
-				return
-			}
-
-			// Add user to request context
-			user := &User{
-				ID:       claims.UserID,
-				Username: claims.Username,
-				Role:     claims.Role,
-			}
-			ctx := context.WithValue(r.Context(), UserContextKey, user)
-			next.ServeHTTP(w, r.WithContext(ctx))
-		})
+// StoreToken adds a token to the store
+func (ts *TokenStore) StoreToken(token, username string, expiry time.Duration) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	ts.tokens[token] = TokenEntry{
+		Username:  username,
+		ExpiresAt: time.Now().Add(expiry),
 	}
 }
 
-// CreateJWT creates a new JWT token
-func CreateJWT(config *AuthConfig, userID, username, role string) (string, error) {
-	claims := Claims{
-		UserID:   userID,
-		Username: username,
-		Role:     role,
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(config.TokenExpiry)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			NotBefore: jwt.NewNumericDate(time.Now()),
-			Issuer:    "ubuntu-auto-update",
-		},
+// ValidateToken checks if a token is valid and not expired
+func (ts *TokenStore) ValidateToken(token string) (string, bool) {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	entry, exists := ts.tokens[token]
+	if !exists {
+		return "", false
 	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString([]byte(config.JWTSecret))
+	if time.Now().After(entry.ExpiresAt) {
+		return "", false
+	}
+	return entry.Username, true
 }
 
-// SetAuthCookie sets authentication cookie
+// RemoveToken removes a token from the store
+func (ts *TokenStore) RemoveToken(token string) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	delete(ts.tokens, token)
+}
+
+// CleanExpiredTokens removes all expired tokens
+func (ts *TokenStore) CleanExpiredTokens() {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	now := time.Now()
+	for token, entry := range ts.tokens {
+		if now.After(entry.ExpiresAt) {
+			delete(ts.tokens, token)
+		}
+	}
+}
+
+// GenerateSecureToken creates a cryptographically random token
+func GenerateSecureToken() (string, error) {
+	bytes := make([]byte, 32)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", fmt.Errorf("failed to generate secure token: %w", err)
+	}
+	return hex.EncodeToString(bytes), nil
+}
+
+// SetAuthCookie sets authentication cookie with secure defaults
 func SetAuthCookie(w http.ResponseWriter, config *AuthConfig, tokenString string) {
+	isProduction := os.Getenv("ENVIRONMENT") == "production"
 	cookie := &http.Cookie{
 		Name:     config.CookieName,
 		Value:    tokenString,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   os.Getenv("ENVIRONMENT") == "production", // HTTPS in production
+		Secure:   isProduction,
 		SameSite: http.SameSiteLaxMode,
-		Expires:  time.Now().Add(config.TokenExpiry),
+		MaxAge:   86400, // 24 hours
 	}
 	http.SetCookie(w, cookie)
 }
 
 // ClearAuthCookie clears authentication cookie
 func ClearAuthCookie(w http.ResponseWriter, config *AuthConfig) {
+	isProduction := os.Getenv("ENVIRONMENT") == "production"
 	cookie := &http.Cookie{
 		Name:     config.CookieName,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   os.Getenv("ENVIRONMENT") == "production",
+		Secure:   isProduction,
 		SameSite: http.SameSiteLaxMode,
-		Expires:  time.Now().Add(-time.Hour), // Expire immediately
+		MaxAge:   -1,
 	}
 	http.SetCookie(w, cookie)
 }
@@ -197,4 +168,58 @@ func RoleMiddleware(requiredRole string) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// TokenAuthMiddleware validates tokens from the token store
+func TokenAuthMiddleware(store *TokenStore, config *AuthConfig) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var tokenString string
+
+			// Try to get token from cookie first (for web UI)
+			if cookie, err := r.Cookie(config.CookieName); err == nil {
+				tokenString = cookie.Value
+			}
+
+			// If no cookie, try Authorization header (for API clients / agents)
+			if tokenString == "" {
+				authHeader := r.Header.Get("Authorization")
+				if strings.HasPrefix(authHeader, "Bearer ") {
+					tokenString = strings.TrimPrefix(authHeader, "Bearer ")
+				}
+			}
+
+			if tokenString == "" {
+				SendAuthError(w, "No authentication token provided")
+				return
+			}
+
+			// Validate token
+			username, valid := store.ValidateToken(tokenString)
+			if !valid {
+				SendAuthError(w, "Invalid or expired authentication token")
+				return
+			}
+
+			// Add user to request context
+			user := &User{
+				Username: username,
+				Role:     "admin", // For now, all authenticated users are admin
+			}
+			ctx := context.WithValue(r.Context(), UserContextKey, user)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+// StartTokenCleanup starts a background goroutine that cleans expired tokens
+func StartTokenCleanup(store *TokenStore, interval time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			store.CleanExpiredTokens()
+			log.Debug("Expired tokens cleaned up")
+		}
+	}()
 }

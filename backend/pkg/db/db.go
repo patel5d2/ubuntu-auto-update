@@ -27,10 +27,10 @@ func NewConnection(ctx context.Context) (*pgxpool.Pool, error) {
 
 func UpsertHost(ctx context.Context, db *pgxpool.Pool, hostname string, sshUser string, updateOutput string, upgradeOutput string, errorMsg string) (models.Host, error) {
 	var host models.Host
-	var error sql.NullString
+	var hostError sql.NullString
 	if errorMsg != "" {
-		error.String = errorMsg
-		error.Valid = true
+		hostError.String = errorMsg
+		hostError.Valid = true
 	}
 	err := db.QueryRow(ctx, `
 		INSERT INTO hosts (hostname, ssh_user, last_seen, update_output, upgrade_output, error)
@@ -42,7 +42,7 @@ func UpsertHost(ctx context.Context, db *pgxpool.Pool, hostname string, sshUser 
 		    upgrade_output = $4,
 		    error = $5
 		RETURNING id, hostname, ssh_user, created_at, updated_at, last_seen, update_output, upgrade_output, error
-	`, hostname, sshUser, updateOutput, upgradeOutput, error).Scan(&host.ID, &host.Hostname, &host.SshUser, &host.CreatedAt, &host.UpdatedAt, &host.LastSeen, &host.UpdateOutput, &host.UpgradeOutput, &host.Error)
+	`, hostname, sshUser, updateOutput, upgradeOutput, hostError).Scan(&host.ID, &host.Hostname, &host.SshUser, &host.CreatedAt, &host.UpdatedAt, &host.LastSeen, &host.UpdateOutput, &host.UpgradeOutput, &host.Error)
 	return host, err
 }
 
@@ -53,13 +53,18 @@ func ListHosts(ctx context.Context, db *pgxpool.Pool) ([]models.Host, error) {
 	}
 	defer rows.Close()
 
-	var hosts []models.Host
+	hosts := make([]models.Host, 0) // Return empty slice, not nil (avoids null JSON)
 	for rows.Next() {
 		var host models.Host
 		if err := rows.Scan(&host.ID, &host.Hostname, &host.SshUser, &host.CreatedAt, &host.UpdatedAt, &host.LastSeen, &host.UpdateOutput, &host.UpgradeOutput, &host.Error); err != nil {
 			return nil, err
 		}
 		hosts = append(hosts, host)
+	}
+
+	// Check for errors from iterating over rows
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
 	return hosts, nil
@@ -80,7 +85,7 @@ func GetSSHKey(ctx context.Context, db *pgxpool.Pool, hostID int32) (models.SSHK
 
 	decryptedKey, err := crypto.Decrypt(key.PrivateKey)
 	if err != nil {
-		return models.SSHKey{}, err
+		return models.SSHKey{}, fmt.Errorf("failed to decrypt SSH key for host %d: %w", hostID, err)
 	}
 
 	key.PrivateKey = decryptedKey
@@ -90,7 +95,7 @@ func GetSSHKey(ctx context.Context, db *pgxpool.Pool, hostID int32) (models.SSHK
 func AddSSHKey(ctx context.Context, db *pgxpool.Pool, hostID int32, privateKey string) error {
 	encryptedKey, err := crypto.Encrypt(privateKey)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to encrypt SSH key: %w", err)
 	}
 
 	_, err = db.Exec(ctx, `
@@ -109,7 +114,7 @@ func GetWebhooks(ctx context.Context, db *pgxpool.Pool, event string) ([]models.
 	}
 	defer rows.Close()
 
-	var webhooks []models.Webhook
+	webhooks := make([]models.Webhook, 0) // Return empty slice, not nil
 	for rows.Next() {
 		var webhook models.Webhook
 		if err := rows.Scan(&webhook.ID, &webhook.URL, &webhook.Event); err != nil {
@@ -118,5 +123,21 @@ func GetWebhooks(ctx context.Context, db *pgxpool.Pool, event string) ([]models.
 		webhooks = append(webhooks, webhook)
 	}
 
+	// Check for errors from iterating over rows
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
 	return webhooks, nil
+}
+
+// StoreAgentToken stores a hashed agent authentication token
+func StoreAgentToken(ctx context.Context, db *pgxpool.Pool, hostID int32, tokenHash string) error {
+	_, err := db.Exec(ctx, `
+		INSERT INTO agent_tokens (host_id, token_hash, created_at, is_active, scopes)
+		VALUES ($1, $2, NOW(), TRUE, ARRAY['update', 'report'])
+		ON CONFLICT (host_id) DO UPDATE
+		SET token_hash = $2, is_active = TRUE
+	`, hostID, tokenHash)
+	return err
 }

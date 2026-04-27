@@ -4,17 +4,18 @@ import (
 	"encoding/json"
 	"net/http"
 	"runtime/debug"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 )
 
 type ErrorResponse struct {
-	Error      string            `json:"error"`
-	Message    string            `json:"message"`
-	StatusCode int               `json:"status_code"`
-	RequestID  string            `json:"request_id,omitempty"`
+	Error      string                 `json:"error"`
+	Message    string                 `json:"message"`
+	StatusCode int                    `json:"status_code"`
+	RequestID  string                 `json:"request_id,omitempty"`
 	Details    map[string]interface{} `json:"details,omitempty"`
-	Timestamp  string            `json:"timestamp"`
+	Timestamp  string                 `json:"timestamp"`
 }
 
 // ErrorHandler middleware for centralized error handling
@@ -24,11 +25,11 @@ func ErrorHandler(next http.Handler) http.Handler {
 			if err := recover(); err != nil {
 				// Log the panic with stack trace
 				log.WithFields(log.Fields{
-					"panic":    err,
-					"stack":    string(debug.Stack()),
-					"method":   r.Method,
-					"path":     r.URL.Path,
-					"remote":   r.RemoteAddr,
+					"panic":  err,
+					"stack":  string(debug.Stack()),
+					"method": r.Method,
+					"path":   r.URL.Path,
+					"remote": r.RemoteAddr,
 				}).Error("HTTP handler panic recovered")
 
 				// Return internal server error
@@ -93,7 +94,7 @@ func SendAuthError(w http.ResponseWriter, message string) {
 	SendErrorResponse(w, http.StatusUnauthorized, "authentication_error", message, nil)
 }
 
-// SendForbiddenError sends a forbidden error response  
+// SendForbiddenError sends a forbidden error response
 func SendForbiddenError(w http.ResponseWriter, message string) {
 	SendErrorResponse(w, http.StatusForbidden, "forbidden", message, nil)
 }
@@ -108,5 +109,5 @@ func SendNotFoundError(w http.ResponseWriter, resource string) {
 }
 
 func getCurrentTimestamp() string {
-	return "now" // TODO: Use proper timestamp formatting
+	return time.Now().UTC().Format(time.RFC3339)
 }

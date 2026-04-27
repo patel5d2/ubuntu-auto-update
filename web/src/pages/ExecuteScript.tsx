@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useParams } from 'react-router-dom';
+import { createWebSocket } from '../api';
 
 export function ExecuteScript() {
   const { hostId } = useParams<{ hostId: string }>();
@@ -10,7 +11,7 @@ export function ExecuteScript() {
   const handleExecuteScript = () => {
     setIsModalOpen(true);
     setOutput([]);
-    const ws = new WebSocket(`ws://${window.location.host}/api/v1/hosts/${hostId}/execute-script`);
+    const ws = createWebSocket(`/api/v1/hosts/${hostId}/execute-script`);
 
     ws.onopen = () => {
       ws.send(script);

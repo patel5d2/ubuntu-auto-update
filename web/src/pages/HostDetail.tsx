@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
+import { apiGet, apiPost, createWebSocket } from '../api';
 
 interface Host {
   id: number;
@@ -7,7 +8,7 @@ interface Host {
   ssh_user: string;
   update_output: string;
   upgrade_output: string;
-  error: string;
+  error: string | null;
 }
 
 export function HostDetail() {
@@ -18,8 +19,7 @@ export function HostDetail() {
 
   useEffect(() => {
     if (hostId) {
-      fetch(`http://localhost:8081/api/v1/hosts/${hostId}`)
-        .then(res => res.json())
+      apiGet<Host>(`/api/v1/hosts/${hostId}`)
         .then(setHost)
         .catch(err => console.error("Failed to fetch host details:", err));
     }
@@ -28,7 +28,7 @@ export function HostDetail() {
   const handleRunUpdate = () => {
     setIsModalOpen(true);
     setUpdateOutput([]);
-    const ws = new WebSocket(`ws://localhost:8081/api/v1/hosts/${hostId}/run-update`);
+    const ws = createWebSocket(`/api/v1/hosts/${hostId}/run-update`);
 
     ws.onmessage = (event) => {
       setUpdateOutput(prev => [...prev, event.data]);
@@ -43,35 +43,20 @@ export function HostDetail() {
     };
   };
 
-  // const handleScanKey = async () => { // Keeping for future functionality
-  //   const response = await fetch(`http://localhost:8081/api/v1/hosts/${hostId}/ssh-key`, {
-  //     method: 'POST',
-  //   });
-  //
-  //   if (response.ok) {
-  //     alert('Host key scanned successfully!');
-  //   } else {
-  //     alert('Failed to scan host key.');
-  //   }
-  // };
-
   const handleSaveKey = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const form = event.currentTarget;
     const sshUser = (form.elements.namedItem('sshUser') as HTMLInputElement).value;
     const privateKey = (form.elements.namedItem('privateKey') as HTMLTextAreaElement).value;
 
-    const response = await fetch(`http://localhost:8081/api/v1/hosts/${hostId}/ssh-key`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ssh_user: sshUser, private_key: privateKey }),
-      }
-    );
-
-    if (response.ok) {
+    try {
+      await apiPost(`/api/v1/hosts/${hostId}/ssh-key`, {
+        ssh_user: sshUser,
+        private_key: privateKey,
+      });
       alert('Key saved successfully!');
-    } else {
+    } catch (err) {
+      console.error('Failed to save key:', err);
       alert('Failed to save key.');
     }
   };
