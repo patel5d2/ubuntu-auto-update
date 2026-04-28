@@ -2,19 +2,15 @@ import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { apiGet, apiPost, createWebSocket } from '../api';
 import type { Host } from '../types';
-
-type SaveKeyState =
-  | { kind: 'idle' }
-  | { kind: 'saving' }
-  | { kind: 'success'; message: string }
-  | { kind: 'error'; message: string };
+import { useToast } from '../components/Toast';
 
 export function HostDetail() {
   const { hostId } = useParams<{ hostId: string }>();
   const [host, setHost] = useState<Host | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [updateOutput, setUpdateOutput] = useState<string[]>([]);
-  const [saveKey, setSaveKey] = useState<SaveKeyState>({ kind: 'idle' });
+  const [savingKey, setSavingKey] = useState(false);
+  const toast = useToast();
 
   useEffect(() => {
     if (!hostId) return;
@@ -33,7 +29,7 @@ export function HostDetail() {
 
   const handleSaveKey = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    setSaveKey({ kind: 'saving' });
+    setSavingKey(true);
 
     const data = new FormData(event.currentTarget);
     const sshUser = String(data.get('sshUser') ?? '');
@@ -44,10 +40,12 @@ export function HostDetail() {
         ssh_user: sshUser,
         private_key: privateKey,
       });
-      setSaveKey({ kind: 'success', message: 'Key saved successfully.' });
+      toast.show('SSH key saved.', 'success');
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to save key.';
-      setSaveKey({ kind: 'error', message });
+      toast.show(message, 'error');
+    } finally {
+      setSavingKey(false);
     }
   };
 
@@ -93,15 +91,9 @@ export function HostDetail() {
               <textarea id="privateKey" name="privateKey" placeholder="Private Key" required rows={10} />
             </label>
           </div>
-          <button type="submit" disabled={saveKey.kind === 'saving'}>
-            {saveKey.kind === 'saving' ? 'Saving...' : 'Save Key'}
+          <button type="submit" disabled={savingKey} aria-busy={savingKey || undefined}>
+            {savingKey ? 'Saving...' : 'Save Key'}
           </button>
-          {saveKey.kind === 'success' && (
-            <aside role="status" style={{ color: 'var(--pico-color-green-500)' }}>{saveKey.message}</aside>
-          )}
-          {saveKey.kind === 'error' && (
-            <aside role="alert" style={{ color: 'var(--pico-color-red-500)' }}>{saveKey.message}</aside>
-          )}
         </form>
       </details>
 
