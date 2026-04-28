@@ -151,6 +151,7 @@ func main() {
 	api.HandleFunc("/hosts/{id}/execute-script", app.handleExecuteScript).Methods(http.MethodGet)
 	api.HandleFunc("/hosts/{id}/ssh-key", app.handleAddSSHKey).Methods(http.MethodPost)
 	api.HandleFunc("/hosts/{id}/test-connection", app.handleTestConnection).Methods(http.MethodPost)
+	api.HandleFunc("/hosts/{id}/auto-configure", app.handleAutoConfigure).Methods(http.MethodPost)
 	api.HandleFunc("/hosts/bulk/run-update", app.handleBulkRunUpdate).Methods(http.MethodPost)
 	api.HandleFunc("/hosts/{id}/runs", app.handleListRuns).Methods(http.MethodGet)
 	api.HandleFunc("/runs", app.handleListRunsByGroup).Methods(http.MethodGet)
@@ -380,12 +381,21 @@ func (app *Application) handleGetHost(w http.ResponseWriter, r *http.Request) {
 // handleCreateHost lets an operator create a host record without going
 // through agent enrollment. Returns 409 Conflict if the hostname already
 // exists.
+//
+// When the request body includes a `password`, the handler does a one-shot
+// enrollment: it password-SSHes into the host, generates a fresh ed25519
+// keypair, installs the public key, configures passwordless sudo for
+// non-root users, captures the host key, and verifies the new key works.
+// On any failure during that flow the host row is rolled back so the UI
+// doesn't end up with a half-configured record. The password itself is
+// never stored — it lives in memory only for the duration of this call.
 func (app *Application) handleCreateHost(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 
 	var req struct {
 		Hostname string `json:"hostname"`
 		SshUser  string `json:"ssh_user"`
+		Password string `json:"password"` // optional; triggers auto-enrollment
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "Invalid request body")
@@ -413,7 +423,49 @@ func (app *Application) handleCreateHost(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	log.Infof("Operator created host: %s (ID: %d)", host.Hostname, host.ID)
+	// No password = legacy path: just the row. Operator will paste a key
+	// later via the SSH tab.
+	if req.Password == "" {
+		log.Infof("Operator created host: %s (ID: %d)", host.Hostname, host.ID)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(host)
+		return
+	}
+
+	// Auto-enroll path. Use a longer ctx than the request — the client
+	// disconnecting mid-bootstrap shouldn't leave a half-configured host.
+	enrollCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	result, bootstrapErr := app.SSHDialer.Bootstrap(enrollCtx, req.Hostname, req.SshUser, req.Password)
+	if bootstrapErr != nil {
+		// Roll back the host row so the operator can retry from a clean
+		// slate. Use enrollCtx (not r.Context()) so client cancellation
+		// doesn't leave an orphan.
+		if _, delErr := db.DeleteHost(enrollCtx, app.DB, host.ID); delErr != nil {
+			log.Errorf("Auto-enroll rollback for host %d failed: %v (original: %v)", host.ID, delErr, bootstrapErr)
+		}
+		log.Warnf("Auto-enroll failed for %s: %v", req.Hostname, bootstrapErr)
+		writeJSONError(w, http.StatusBadGateway, "Auto-enrollment failed: "+bootstrapErr.Error())
+		return
+	}
+
+	if err := db.AddSSHKey(enrollCtx, app.DB, host.ID, result.PrivateKeyPEM); err != nil {
+		// Same rollback rationale.
+		_, _ = db.DeleteHost(enrollCtx, app.DB, host.ID)
+		log.Errorf("Auto-enroll: store key failed for host %d: %v", host.ID, err)
+		writeJSONError(w, http.StatusInternalServerError, "Enrollment succeeded but storing the key failed; please retry")
+		return
+	}
+
+	if err := app.SSHDialer.AppendKnownHost(req.Hostname, result.HostKey); err != nil {
+		// Non-fatal but log loud — without the known_hosts entry, regular
+		// dials will fail until the operator restarts the backend.
+		log.Errorf("Auto-enroll: append known_hosts for %s failed: %v", req.Hostname, err)
+	}
+
+	log.Infof("Auto-enrolled host: %s (ID: %d, sudo=%v)", host.Hostname, host.ID, result.SudoConfigured)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(host)
@@ -542,6 +594,88 @@ func (app *Application) handleAddWebhook(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	w.WriteHeader(http.StatusCreated)
+}
+
+// handleAutoConfigure runs the bootstrap flow against an existing host
+// (one that the operator added without a password, or that was created
+// by an agent enroll but never had a key pasted in). Same flow as the
+// inline auto-enroll in handleCreateHost — generate a fresh key, install
+// it, configure passwordless sudo for non-root, capture host key — but
+// without the rollback, since we're keeping the host row regardless.
+func (app *Application) handleAutoConfigure(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+
+	id, err := parseHostID(r)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Invalid host ID")
+		return
+	}
+
+	var req struct {
+		Password string `json:"password"`
+		SshUser  string `json:"ssh_user,omitempty"` // optional override
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	req.Password = strings.TrimSpace(req.Password)
+	if req.Password == "" {
+		writeJSONError(w, http.StatusBadRequest, "Password is required")
+		return
+	}
+
+	host, err := db.GetHost(r.Context(), app.DB, id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusNotFound, "Host not found")
+			return
+		}
+		log.Errorf("auto-configure: get host %d: %v", id, err)
+		writeJSONError(w, http.StatusInternalServerError, "Failed to retrieve host")
+		return
+	}
+
+	// Allow the caller to override ssh_user in the same request — common
+	// when the original record had a placeholder. Persist it before we
+	// run bootstrap so the new key matches the user we install it for.
+	sshUser := strings.TrimSpace(req.SshUser)
+	if sshUser != "" && sshUser != host.SshUser {
+		updated, err := db.UpdateHostSSHUser(r.Context(), app.DB, id, sshUser)
+		if err != nil {
+			log.Errorf("auto-configure: update ssh_user for host %d: %v", id, err)
+			writeJSONError(w, http.StatusInternalServerError, "Failed to update ssh_user")
+			return
+		}
+		host = updated
+	}
+
+	enrollCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	result, bootstrapErr := app.SSHDialer.Bootstrap(enrollCtx, host.Hostname, host.SshUser, req.Password)
+	if bootstrapErr != nil {
+		log.Warnf("auto-configure failed for %s (id=%d): %v", host.Hostname, host.ID, bootstrapErr)
+		writeJSONError(w, http.StatusBadGateway, "Auto-configuration failed: "+bootstrapErr.Error())
+		return
+	}
+
+	if err := db.AddSSHKey(enrollCtx, app.DB, host.ID, result.PrivateKeyPEM); err != nil {
+		log.Errorf("auto-configure: store key for host %d: %v", host.ID, err)
+		writeJSONError(w, http.StatusInternalServerError, "Configuration succeeded but storing the key failed; please retry")
+		return
+	}
+
+	if err := app.SSHDialer.AppendKnownHost(host.Hostname, result.HostKey); err != nil {
+		log.Errorf("auto-configure: append known_hosts for %s: %v", host.Hostname, err)
+	}
+
+	log.Infof("Auto-configured host: %s (ID: %d, sudo=%v)", host.Hostname, host.ID, result.SudoConfigured)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"ok":              true,
+		"sudo_configured": result.SudoConfigured,
+	})
 }
 
 // handleTestConnection probes a host's SSH stack and reports back. Used by the

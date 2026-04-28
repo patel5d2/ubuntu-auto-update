@@ -44,6 +44,18 @@ func (d *Dialer) hostKeyCallback() (ssh.HostKeyCallback, error) {
 	return d.hostKeyCB, d.hostKeyErr
 }
 
+// invalidateHostKeyCache forces the next ConnectToHost call to re-read
+// known_hosts. Used after Bootstrap appends a TOFU-captured host key so
+// the operator doesn't have to restart the backend before the host
+// becomes usable. Field writes are protected by hostKeyOnce's reset
+// pattern; safe under the assumption that bootstrap is rare and not
+// concurrent with itself.
+func (d *Dialer) invalidateHostKeyCache() {
+	d.hostKeyOnce = sync.Once{}
+	d.hostKeyCB = nil
+	d.hostKeyErr = nil
+}
+
 // TestResult summarizes a quick health probe: did SSH dial succeed, how long
 // did the round trip take, and is passwordless sudo available (relevant for
 // non-root ssh users since apt-get upgrade needs it).
