@@ -9,20 +9,36 @@ CREATE INDEX IF NOT EXISTS idx_ssh_keys_host_id ON ssh_keys(host_id);
 -- Add indexes for webhooks
 CREATE INDEX IF NOT EXISTS idx_webhooks_event ON webhooks(event);
 
--- Add constraints for data integrity
-ALTER TABLE hosts ADD CONSTRAINT IF NOT EXISTS check_hostname_not_empty 
-    CHECK (length(trim(hostname)) > 0);
+-- ALTER TABLE ... ADD CONSTRAINT does not support IF NOT EXISTS in any
+-- released Postgres version, so we wrap each one in a DO block that checks
+-- pg_constraint first.
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'check_hostname_not_empty') THEN
+        ALTER TABLE hosts ADD CONSTRAINT check_hostname_not_empty
+            CHECK (length(trim(hostname)) > 0);
+    END IF;
+END $$;
 
-ALTER TABLE hosts ADD CONSTRAINT IF NOT EXISTS check_ssh_user_not_empty 
-    CHECK (length(trim(ssh_user)) > 0);
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'check_ssh_user_not_empty') THEN
+        ALTER TABLE hosts ADD CONSTRAINT check_ssh_user_not_empty
+            CHECK (length(trim(ssh_user)) > 0);
+    END IF;
+END $$;
 
--- Add constraint for webhook URLs
-ALTER TABLE webhooks ADD CONSTRAINT IF NOT EXISTS check_webhook_url_format
-    CHECK (url LIKE 'http%://_%');
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'check_webhook_url_format') THEN
+        ALTER TABLE webhooks ADD CONSTRAINT check_webhook_url_format
+            CHECK (url LIKE 'http%://_%');
+    END IF;
+END $$;
 
--- Add constraint for webhook events
-ALTER TABLE webhooks ADD CONSTRAINT IF NOT EXISTS check_webhook_event_valid
-    CHECK (event IN ('update_success', 'update_failure', 'host_registered', 'host_offline'));
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'check_webhook_event_valid') THEN
+        ALTER TABLE webhooks ADD CONSTRAINT check_webhook_event_valid
+            CHECK (event IN ('update_success', 'update_failure', 'host_registered', 'host_offline', 'preview_success'));
+    END IF;
+END $$;
 
 -- Add updated_at trigger for hosts table
 CREATE OR REPLACE FUNCTION update_updated_at_column()
@@ -34,9 +50,9 @@ END;
 $$ language plpgsql;
 
 DROP TRIGGER IF EXISTS update_hosts_updated_at ON hosts;
-CREATE TRIGGER update_hosts_updated_at 
-    BEFORE UPDATE ON hosts 
-    FOR EACH ROW 
+CREATE TRIGGER update_hosts_updated_at
+    BEFORE UPDATE ON hosts
+    FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
 -- Add audit table for tracking changes

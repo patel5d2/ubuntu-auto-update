@@ -1,45 +1,64 @@
+# Production-ish compose for the README quickstart.
+#
+#   cp .env.example .env       # edit secrets
+#   docker compose up -d
+#
+#   Web UI:  http://localhost:5173
+#   API:     http://localhost:8080/api/v1/health
+#
+# The frontend container is an Nginx serving the prebuilt React bundle and
+# reverse-proxying /api/ → backend. Browser hits a single origin (5173) so
+# CORS only needs to allow that one origin.
+
 services:
   postgres:
-    image: postgres:15
+    image: postgres:15-alpine
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: uau_db
-    ports:
-      - "5432:5432"
+      POSTGRES_USER: ${POSTGRES_USER:-uau}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-uau}
+      POSTGRES_DB: ${POSTGRES_DB:-uau_db}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-
-  redis:
-    image: redis:7
-    ports:
-      - "6379:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-uau} -d ${POSTGRES_DB:-uau_db}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   backend:
     build: ./backend
+    restart: unless-stopped
     ports:
-      - "8082:8080"
+      - "8080:8080"
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
     environment:
-      DATABASE_URL: "postgres://user:password@postgres:5432/uau_db?sslmode=disable"
-      REDIS_URL: "redis://redis:6379"
-      ADMIN_USERNAME: admin
-      ADMIN_PASSWORD: password
-      ENROLLMENT_TOKEN: "your-secret-enrollment-token"
+      DATABASE_URL: postgres://${POSTGRES_USER:-uau}:${POSTGRES_PASSWORD:-uau}@postgres:5432/${POSTGRES_DB:-uau_db}?sslmode=disable
+      ADMIN_USERNAME: ${ADMIN_USERNAME:?ADMIN_USERNAME must be set in .env}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set in .env}
+      ENROLLMENT_TOKEN: ${ENROLLMENT_TOKEN:?ENROLLMENT_TOKEN must be set in .env}
+      API_PORT: 8080
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      # The browser only ever sees the frontend origin (it talks to nginx,
+      # which proxies to backend). Allow that origin only.
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
 
   frontend:
     build: ./web
+    restart: unless-stopped
     ports:
-      - "3000:80"
+      - "5173:80"
     depends_on:
-      - backend
-
-  # sshd:
-  #   build: ./sshd
-  #   ports:
-  #     - "2222:22"
+      backend:
+        condition: service_healthy
 
 volumes:
   postgres_data:

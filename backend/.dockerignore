@@ -1,0 +1,9 @@
+# Don't bake local dev artefacts or secrets into the image.
+encryption.key
+known_hosts
+*.test
+*.out
+.air.toml
+tmp/
+Dockerfile.dev
+README.md
