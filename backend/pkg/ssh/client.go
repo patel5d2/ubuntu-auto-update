@@ -44,6 +44,64 @@ func (d *Dialer) hostKeyCallback() (ssh.HostKeyCallback, error) {
 	return d.hostKeyCB, d.hostKeyErr
 }
 
+// TestResult summarizes a quick health probe: did SSH dial succeed, how long
+// did the round trip take, and is passwordless sudo available (relevant for
+// non-root ssh users since apt-get upgrade needs it).
+type TestResult struct {
+	OK        bool   `json:"ok"`
+	LatencyMs int64  `json:"latency_ms"`
+	SudoState string `json:"sudo_state"` // "root", "available", "unavailable", "n/a"
+	Greeting  string `json:"greeting"`
+	Error     string `json:"error,omitempty"`
+}
+
+// TestConnection dials the host, runs a fast no-op (and `sudo -n true` for
+// non-root users), and returns timing. Exists primarily so the operator UI
+// can verify a host is reachable before triggering a real update.
+func (d *Dialer) TestConnection(ctx context.Context, hostID int32) (TestResult, error) {
+	start := time.Now()
+	client, host, err := d.ConnectToHost(ctx, hostID)
+	if err != nil {
+		return TestResult{OK: false, Error: err.Error()}, nil
+	}
+	defer client.Close()
+
+	session, err := client.NewSession()
+	if err != nil {
+		return TestResult{OK: false, Error: "open session: " + err.Error()}, nil
+	}
+	defer session.Close()
+
+	greeting, err := session.CombinedOutput("echo ubuntu-auto-update-ok && uname -sr")
+	if err != nil {
+		return TestResult{OK: false, Error: "exec probe: " + err.Error()}, nil
+	}
+
+	res := TestResult{
+		OK:        true,
+		LatencyMs: time.Since(start).Milliseconds(),
+		Greeting:  string(greeting),
+		SudoState: "root",
+	}
+
+	if host.SshUser != "" && host.SshUser != "root" {
+		// Run sudo -n true on a fresh session; the previous one is closed already.
+		s2, err := client.NewSession()
+		if err != nil {
+			res.SudoState = "unavailable"
+			return res, nil
+		}
+		defer s2.Close()
+		if err := s2.Run("sudo -n true"); err != nil {
+			res.SudoState = "unavailable"
+		} else {
+			res.SudoState = "available"
+		}
+	}
+
+	return res, nil
+}
+
 // ConnectToHost looks up the host + decrypted SSH key by ID and opens a client.
 // Caller is responsible for closing the returned client.
 func (d *Dialer) ConnectToHost(ctx context.Context, hostID int32) (*ssh.Client, models.Host, error) {

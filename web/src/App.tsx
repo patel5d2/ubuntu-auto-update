@@ -4,24 +4,29 @@ import { HostDetail } from './pages/HostDetail';
 import { LoginPage } from './pages/LoginPage';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { ExecuteScript } from './pages/ExecuteScript';
+import { BulkUpdate } from './pages/BulkUpdate';
 import { ToastProvider } from './components/Toast';
 import { ConfirmProvider } from './components/ConfirmDialog';
+import { EventsProvider } from './hooks/useEvents';
 
 function App() {
   return (
     <ToastProvider>
       <ConfirmProvider>
-        <Router>
-          <Routes>
-            <Route path="/login" element={<LoginPage />} />
-            <Route element={<ProtectedRoute />}>
-              <Route path="/" element={<Navigate to="/hosts" replace />} />
-              <Route path="/hosts" element={<HostList />} />
-              <Route path="/hosts/:hostId" element={<HostDetail />} />
-              <Route path="/hosts/:hostId/execute-script" element={<ExecuteScript />} />
-            </Route>
-          </Routes>
-        </Router>
+        <EventsProvider>
+          <Router>
+            <Routes>
+              <Route path="/login" element={<LoginPage />} />
+              <Route element={<ProtectedRoute />}>
+                <Route path="/" element={<Navigate to="/hosts" replace />} />
+                <Route path="/hosts" element={<HostList />} />
+                <Route path="/hosts/bulk/:groupId" element={<BulkUpdate />} />
+                <Route path="/hosts/:hostId" element={<HostDetail />} />
+                <Route path="/hosts/:hostId/execute-script" element={<ExecuteScript />} />
+              </Route>
+            </Routes>
+          </Router>
+        </EventsProvider>
       </ConfirmProvider>
     </ToastProvider>
   );

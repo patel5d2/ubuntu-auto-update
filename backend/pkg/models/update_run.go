@@ -30,6 +30,7 @@ const (
 type UpdateRun struct {
 	ID          int32         `json:"id"           db:"id"`
 	HostID      int32         `json:"host_id"      db:"host_id"`
+	RunGroupID  sql.NullString `json:"-"           db:"run_group_id"`
 	TriggeredBy string        `json:"triggered_by" db:"triggered_by"`
 	Kind        RunKind       `json:"kind"         db:"kind"`
 	Status      RunStatus     `json:"status"       db:"status"`
@@ -49,6 +50,7 @@ func (r UpdateRun) MarshalJSON() ([]byte, error) {
 		exit interface{}
 		fin  interface{}
 		errV interface{}
+		grp  interface{}
 	)
 	if r.ExitCode.Valid {
 		exit = r.ExitCode.Int32
@@ -59,16 +61,21 @@ func (r UpdateRun) MarshalJSON() ([]byte, error) {
 	if r.Error.Valid {
 		errV = r.Error.String
 	}
+	if r.RunGroupID.Valid {
+		grp = r.RunGroupID.String
+	}
 
 	return json.Marshal(&struct {
 		Alias
 		ExitCode   interface{} `json:"exit_code"`
 		FinishedAt interface{} `json:"finished_at"`
 		Error      interface{} `json:"error"`
+		RunGroupID interface{} `json:"run_group_id"`
 	}{
 		Alias:      Alias(r),
 		ExitCode:   exit,
 		FinishedAt: fin,
 		Error:      errV,
+		RunGroupID: grp,
 	})
 }

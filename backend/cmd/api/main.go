@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,9 +26,11 @@ import (
 	"golang.org/x/crypto/ssh"
 	"ubuntu-auto-update/backend/pkg/config"
 	"ubuntu-auto-update/backend/pkg/db"
+	"ubuntu-auto-update/backend/pkg/events"
 	"ubuntu-auto-update/backend/pkg/middleware"
 	"ubuntu-auto-update/backend/pkg/models"
 	sshpkg "ubuntu-auto-update/backend/pkg/ssh"
+	"ubuntu-auto-update/backend/pkg/updater"
 	"ubuntu-auto-update/backend/pkg/webhook"
 )
 
@@ -41,6 +44,8 @@ type Application struct {
 	CORS           *middleware.CORSConfig
 	SSHDialer      *sshpkg.Dialer
 	WebhookSender  *webhook.Dispatcher
+	BulkUpdater    *updater.Coordinator
+	EventBroker    *events.Broker
 }
 
 // dispatchWebhooks resolves subscribers for an event and queues deliveries.
@@ -103,14 +108,25 @@ func main() {
 	corsCfg := middleware.LoadCORSConfig()
 	dispatcher := webhook.NewDispatcher()
 
+	sshDialer := sshpkg.NewDialer(dbPool)
+	broker := events.NewBroker()
 	app := &Application{
 		DB:            dbPool,
 		TokenStore:    tokenStore,
 		AuthConfig:    authConfig,
 		CORS:          corsCfg,
-		SSHDialer:     sshpkg.NewDialer(dbPool),
+		SSHDialer:     sshDialer,
 		WebhookSender: dispatcher,
+		BulkUpdater:   updater.New(dbPool, sshDialer),
+		EventBroker:   broker,
 	}
+
+	// Start the LISTEN/NOTIFY pump. Lifetime is tied to listenerCtx so the
+	// shutdown path below can stop it cleanly. The goroutine self-recovers
+	// from connection drops via internal backoff — no supervisor needed.
+	listenerCtx, cancelListener := context.WithCancel(context.Background())
+	defer cancelListener()
+	go events.NewListener(dbPool, broker).Run(listenerCtx)
 
 	r := mux.NewRouter()
 	r.Use(middleware.ErrorHandler) // panic recovery + request logging
@@ -134,8 +150,14 @@ func main() {
 	api.HandleFunc("/hosts/{id}/run-update", app.handleRunUpdate).Methods(http.MethodGet)
 	api.HandleFunc("/hosts/{id}/execute-script", app.handleExecuteScript).Methods(http.MethodGet)
 	api.HandleFunc("/hosts/{id}/ssh-key", app.handleAddSSHKey).Methods(http.MethodPost)
+	api.HandleFunc("/hosts/{id}/test-connection", app.handleTestConnection).Methods(http.MethodPost)
+	api.HandleFunc("/hosts/bulk/run-update", app.handleBulkRunUpdate).Methods(http.MethodPost)
 	api.HandleFunc("/hosts/{id}/runs", app.handleListRuns).Methods(http.MethodGet)
+	api.HandleFunc("/runs", app.handleListRunsByGroup).Methods(http.MethodGet)
 	api.HandleFunc("/runs/{id}", app.handleGetRun).Methods(http.MethodGet)
+	// /events is the multiplexed real-time channel — one WS per browser tab,
+	// every state change in hosts/update_runs lands here as {table, op, id}.
+	api.HandleFunc("/events", events.Handler(broker, app.wsUpgrader())).Methods(http.MethodGet)
 	api.HandleFunc("/webhooks", app.handleAddWebhook).Methods(http.MethodPost)
 
 	// Fallback to serving the frontend React application
@@ -522,6 +544,31 @@ func (app *Application) handleAddWebhook(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(http.StatusCreated)
 }
 
+// handleTestConnection probes a host's SSH stack and reports back. Used by the
+// UI's "Test connection" button so the operator can validate the saved key
+// (and passwordless sudo for non-root users) before triggering a real update.
+// 7 seconds is plenty for a healthy host and short enough to be UI-friendly.
+func (app *Application) handleTestConnection(w http.ResponseWriter, r *http.Request) {
+	id, err := parseHostID(r)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Invalid host ID")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 7*time.Second)
+	defer cancel()
+
+	result, err := app.SSHDialer.TestConnection(ctx, id)
+	if err != nil {
+		log.Errorf("test-connection failed for host %d: %v", id, err)
+		writeJSONError(w, http.StatusInternalServerError, "Test failed")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
 func (app *Application) handleAddSSHKey(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 
@@ -851,6 +898,83 @@ func (app *Application) handleListRuns(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(runs)
+}
+
+// uuidPattern matches the v4-style UUIDs we generate for run groups. Used to
+// reject bogus query params before they hit the DB.
+var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// handleListRunsByGroup returns all runs for a bulk run_group_id. Used by the
+// BulkUpdate page to render per-host progress without subscribing to N
+// websockets.
+func (app *Application) handleListRunsByGroup(w http.ResponseWriter, r *http.Request) {
+	group := r.URL.Query().Get("group_id")
+	if group == "" || !uuidPattern.MatchString(group) {
+		writeJSONError(w, http.StatusBadRequest, "group_id query parameter required (UUID format)")
+		return
+	}
+	runs, err := db.ListRunsForGroup(r.Context(), app.DB, group)
+	if err != nil {
+		log.Errorf("Failed to list runs for group %s: %v", group, err)
+		writeJSONError(w, http.StatusInternalServerError, "Failed to retrieve runs")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(runs)
+}
+
+// handleBulkRunUpdate fans an apt-get upgrade across many hosts. Bounded by
+// MaxConcurrency in the updater package; further constrained by an in-flight
+// "one bulk per server" cap so an over-eager operator can't pile up a hundred
+// fan-outs in parallel.
+func (app *Application) handleBulkRunUpdate(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+
+	var req struct {
+		HostIDs     []int32 `json:"host_ids"`
+		Concurrency int     `json:"concurrency,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if len(req.HostIDs) == 0 {
+		writeJSONError(w, http.StatusBadRequest, "host_ids must not be empty")
+		return
+	}
+	if len(req.HostIDs) > 200 {
+		writeJSONError(w, http.StatusBadRequest, "host_ids capped at 200 per request")
+		return
+	}
+
+	// Cheap rate-limit: one bulk group at a time per server. The plan called
+	// out per-user, but with single-admin auth today this is equivalent.
+	if app.BulkUpdater.InFlightCount() >= 1 {
+		writeJSONError(w, http.StatusConflict, "Another bulk update is already running. Try again when it finishes.")
+		return
+	}
+
+	user := middleware.GetUserFromContext(r)
+	triggeredBy := "unknown"
+	if user != nil {
+		triggeredBy = user.Username
+	}
+
+	result, err := app.BulkUpdater.Start(r.Context(), updater.BulkRunOptions{
+		HostIDs:     req.HostIDs,
+		Concurrency: req.Concurrency,
+		TriggeredBy: triggeredBy,
+	})
+	if err != nil {
+		log.Errorf("bulk update start failed: %v", err)
+		writeJSONError(w, http.StatusInternalServerError, "Failed to start bulk update: "+err.Error())
+		return
+	}
+
+	log.Infof("Bulk update %s triggered by %s across %d hosts", result.GroupID, triggeredBy, len(req.HostIDs))
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(result)
 }
 
 // handleGetRun returns a single run by id, including its full output buffer.

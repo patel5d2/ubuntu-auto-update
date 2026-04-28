@@ -22,6 +22,7 @@ export type RunStatus = 'running' | 'succeeded' | 'failed' | 'cancelled';
 export interface UpdateRun {
   id: number;
   host_id: number;
+  run_group_id: string | null;
   triggered_by: string;
   kind: RunKind;
   status: RunStatus;
@@ -30,4 +31,18 @@ export interface UpdateRun {
   finished_at: string | null;
   output: string;
   error: string | null;
+}
+
+export interface BulkRunResult {
+  group_id: string;
+  run_ids: number[];
+  host_ids: number[];
+}
+
+export interface TestConnectionResult {
+  ok: boolean;
+  latency_ms: number;
+  sudo_state: 'root' | 'available' | 'unavailable' | 'n/a';
+  greeting: string;
+  error?: string;
 }

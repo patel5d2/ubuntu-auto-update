@@ -23,6 +23,7 @@ const RUNS: UpdateRun[] = [
   {
     id: 101,
     host_id: 7,
+    run_group_id: null,
     triggered_by: 'admin',
     kind: 'update',
     status: 'succeeded',
@@ -35,6 +36,7 @@ const RUNS: UpdateRun[] = [
   {
     id: 102,
     host_id: 7,
+    run_group_id: null,
     triggered_by: 'admin',
     kind: 'preview',
     status: 'failed',

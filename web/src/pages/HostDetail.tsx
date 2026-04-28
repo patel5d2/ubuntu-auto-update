@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { formatDistanceToNow } from 'date-fns';
 import { apiDelete, apiGet, apiPost, createWebSocket } from '../api';
-import type { Host, UpdateRun } from '../types';
+import type { Host, TestConnectionResult, UpdateRun } from '../types';
 import { useToast } from '../components/Toast';
 import { useConfirm } from '../components/ConfirmDialog';
 import { Tabs } from '../components/Tabs';
 import { StatusBadge } from '../components/StatusBadge';
+import { RelativeTime } from '../components/RelativeTime';
 
 type TabId = 'overview' | 'history' | 'ssh';
 
@@ -18,6 +18,7 @@ export function HostDetail() {
   const [tab, setTab] = useState<TabId>('overview');
   const [savingKey, setSavingKey] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [testing, setTesting] = useState(false);
 
   // Live-run state. Driven by the websocket while a preview/update is active.
   const [liveLines, setLiveLines] = useState<string[]>([]);
@@ -110,6 +111,32 @@ export function HostDetail() {
       toast.show(err instanceof Error ? err.message : 'Failed to save key.', 'error');
     } finally {
       setSavingKey(false);
+    }
+  };
+
+  const handleTestConnection = async () => {
+    if (!hostId) return;
+    setTesting(true);
+    try {
+      const result = await apiPost<TestConnectionResult>(
+        `/api/v1/hosts/${hostId}/test-connection`,
+        {},
+      );
+      if (!result.ok) {
+        toast.show(`Test failed: ${result.error ?? 'unknown error'}`, 'error');
+        return;
+      }
+      const sudoNote =
+        result.sudo_state === 'available' ? ' · sudo OK'
+          : result.sudo_state === 'unavailable' ? ' · sudo MISSING (apt-get upgrade will fail)'
+          : result.sudo_state === 'root' ? ' · running as root'
+          : '';
+      const tone = result.sudo_state === 'unavailable' ? 'error' : 'success';
+      toast.show(`Connected in ${result.latency_ms}ms${sudoNote}`, tone);
+    } catch (err) {
+      toast.show(err instanceof Error ? err.message : 'Test failed', 'error');
+    } finally {
+      setTesting(false);
     }
   };
 
@@ -227,9 +254,21 @@ export function HostDetail() {
 
       {tab === 'ssh' && (
         <section role="tabpanel" id="panel-ssh" aria-labelledby="tab-ssh">
-          <p>
-            Current SSH user: <code>{host.ssh_user}</code>
-          </p>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
+            <p style={{ margin: 0 }}>
+              Current SSH user: <code>{host.ssh_user}</code>
+            </p>
+            <button
+              type="button"
+              className="secondary"
+              onClick={handleTestConnection}
+              disabled={testing}
+              aria-busy={testing || undefined}
+              style={{ width: 'auto' }}
+            >
+              {testing ? 'Testing…' : 'Test connection'}
+            </button>
+          </div>
           <form onSubmit={handleSaveKey}>
             <div className="grid">
               <label htmlFor="sshUser">
@@ -241,6 +280,11 @@ export function HostDetail() {
                 <textarea id="privateKey" name="privateKey" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" required rows={10} />
               </label>
             </div>
+            <small style={{ display: 'block', opacity: 0.7, marginBottom: '0.5rem' }}>
+              For non-root SSH users, configure passwordless sudo on the target — apt-get
+              upgrade requires it. Use <strong>Test connection</strong> to verify before
+              triggering an update.
+            </small>
             <button type="submit" disabled={savingKey} aria-busy={savingKey || undefined}>
               {savingKey ? 'Saving…' : 'Save Key'}
             </button>
@@ -281,13 +325,12 @@ function RunsTable({ runs }: { runs: UpdateRun[] }) {
       </thead>
       <tbody>
         {runs.map(run => {
-          const started = new Date(run.started_at);
           const finished = run.finished_at ? new Date(run.finished_at) : null;
-          const duration = finished ? formatDuration(finished.getTime() - started.getTime()) : '—';
+          const duration = finished ? formatDuration(finished.getTime() - new Date(run.started_at).getTime()) : '—';
           return (
             <tr key={run.id}>
-              <td title={started.toISOString()}>
-                {formatDistanceToNow(started, { addSuffix: true })}
+              <td>
+                <RelativeTime time={run.started_at} />
               </td>
               <td>{run.kind}</td>
               <td>
