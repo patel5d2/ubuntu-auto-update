@@ -15,12 +15,12 @@ import (
 // testApp creates an Application for testing with a token store but no real DB.
 func testApp(t *testing.T) *Application {
 	t.Helper()
-	ts := middleware.GetTokenStore()
-	authConfig := middleware.NewAuthConfig()
+	t.Setenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000")
 	return &Application{
-		DB:         nil, // Will not be used in unit tests
-		TokenStore: ts,
-		AuthConfig: authConfig,
+		DB:         nil, // not used by validation-only tests
+		TokenStore: middleware.GetTokenStore(),
+		AuthConfig: middleware.NewAuthConfig(),
+		CORS:       middleware.LoadCORSConfig(),
 	}
 }
 
@@ -42,7 +42,6 @@ func TestHandleLogin_Success(t *testing.T) {
 		t.Errorf("expected status 200, got %d: %s", rr.Code, rr.Body.String())
 	}
 
-	// Should set auth_token cookie
 	cookies := rr.Result().Cookies()
 	found := false
 	for _, c := range cookies {
@@ -60,7 +59,6 @@ func TestHandleLogin_Success(t *testing.T) {
 		t.Error("expected auth_token cookie to be set")
 	}
 
-	// Should return a token in JSON body
 	var resp map[string]string
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to parse response: %v", err)
@@ -88,7 +86,6 @@ func TestHandleLogin_InvalidCredentials(t *testing.T) {
 
 func TestHandleLogin_EmptyCredentialsConfig(t *testing.T) {
 	app := testApp(t)
-	// ADMIN_USERNAME and ADMIN_PASSWORD not set
 	os.Unsetenv("ADMIN_USERNAME")
 	os.Unsetenv("ADMIN_PASSWORD")
 
@@ -198,17 +195,20 @@ func TestHandleEnroll_MissingEnrollmentConfig(t *testing.T) {
 	}
 }
 
-// --- authMiddleware tests ---
+// --- TokenAuthMiddleware tests (replaces former inline authMiddleware) ---
+
+func okHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+}
 
 func TestAuthMiddleware_NoAuth(t *testing.T) {
 	app := testApp(t)
-	handler := app.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
+	handler := middleware.TokenAuthMiddleware(app.TokenStore, app.AuthConfig)(okHandler())
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	rr := httptest.NewRecorder()
-
 	handler.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusUnauthorized {
@@ -218,14 +218,11 @@ func TestAuthMiddleware_NoAuth(t *testing.T) {
 
 func TestAuthMiddleware_InvalidToken(t *testing.T) {
 	app := testApp(t)
-	handler := app.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
+	handler := middleware.TokenAuthMiddleware(app.TokenStore, app.AuthConfig)(okHandler())
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	req.Header.Set("Authorization", "Bearer invalid-token-123")
 	rr := httptest.NewRecorder()
-
 	handler.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusUnauthorized {
@@ -235,18 +232,12 @@ func TestAuthMiddleware_InvalidToken(t *testing.T) {
 
 func TestAuthMiddleware_ValidBearerToken(t *testing.T) {
 	app := testApp(t)
-
-	// Store a valid token
 	app.TokenStore.StoreToken("valid-test-token", "testuser", time.Hour)
-
-	handler := app.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
+	handler := middleware.TokenAuthMiddleware(app.TokenStore, app.AuthConfig)(okHandler())
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	req.Header.Set("Authorization", "Bearer valid-test-token")
 	rr := httptest.NewRecorder()
-
 	handler.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
@@ -256,18 +247,12 @@ func TestAuthMiddleware_ValidBearerToken(t *testing.T) {
 
 func TestAuthMiddleware_ValidCookie(t *testing.T) {
 	app := testApp(t)
-
-	// Store a valid token
 	app.TokenStore.StoreToken("cookie-token", "testuser", time.Hour)
-
-	handler := app.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
+	handler := middleware.TokenAuthMiddleware(app.TokenStore, app.AuthConfig)(okHandler())
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	req.AddCookie(&http.Cookie{Name: "auth_token", Value: "cookie-token"})
 	rr := httptest.NewRecorder()
-
 	handler.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
@@ -277,18 +262,12 @@ func TestAuthMiddleware_ValidCookie(t *testing.T) {
 
 func TestAuthMiddleware_ExpiredToken(t *testing.T) {
 	app := testApp(t)
-
-	// Store a token that's already expired
 	app.TokenStore.StoreToken("expired-token", "testuser", -time.Hour)
-
-	handler := app.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
+	handler := middleware.TokenAuthMiddleware(app.TokenStore, app.AuthConfig)(okHandler())
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	req.Header.Set("Authorization", "Bearer expired-token")
 	rr := httptest.NewRecorder()
-
 	handler.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusUnauthorized {
@@ -296,18 +275,15 @@ func TestAuthMiddleware_ExpiredToken(t *testing.T) {
 	}
 }
 
-// --- corsMiddleware tests ---
+// --- CORS middleware tests (now in pkg/middleware/cors.go) ---
 
 func TestCorsMiddleware_SetsHeaders(t *testing.T) {
 	app := testApp(t)
-	handler := app.corsMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
+	handler := middleware.CORS(app.CORS)(okHandler())
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	req.Header.Set("Origin", "http://localhost:5173")
 	rr := httptest.NewRecorder()
-
 	handler.ServeHTTP(rr, req)
 
 	if rr.Header().Get("Access-Control-Allow-Origin") != "http://localhost:5173" {
@@ -317,14 +293,13 @@ func TestCorsMiddleware_SetsHeaders(t *testing.T) {
 
 func TestCorsMiddleware_PreflightReturns200(t *testing.T) {
 	app := testApp(t)
-	handler := app.corsMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound) // Should never reach here for OPTIONS
+	handler := middleware.CORS(app.CORS)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound) // should never reach here for OPTIONS
 	}))
 
 	req := httptest.NewRequest(http.MethodOptions, "/test", nil)
 	req.Header.Set("Origin", "http://localhost:5173")
 	rr := httptest.NewRecorder()
-
 	handler.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
@@ -334,14 +309,11 @@ func TestCorsMiddleware_PreflightReturns200(t *testing.T) {
 
 func TestCorsMiddleware_UnknownOriginNotAllowed(t *testing.T) {
 	app := testApp(t)
-	handler := app.corsMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
+	handler := middleware.CORS(app.CORS)(okHandler())
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	req.Header.Set("Origin", "http://evil.com")
 	rr := httptest.NewRecorder()
-
 	handler.ServeHTTP(rr, req)
 
 	if rr.Header().Get("Access-Control-Allow-Origin") != "" {
@@ -352,9 +324,6 @@ func TestCorsMiddleware_UnknownOriginNotAllowed(t *testing.T) {
 // --- handleHealth tests (requires DB, so we test the error path) ---
 
 func TestHandleHealth_NoDB(t *testing.T) {
-	// An app with nil DB should return unhealthy
-	// We can't test this without panic, so we skip
-	// In production you'd use a mock DB interface
 	t.Skip("Requires DB mock - covered by integration tests")
 }
 
@@ -365,7 +334,6 @@ func TestHandleReport_InvalidJSON(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/report", bytes.NewReader([]byte("not json")))
 	rr := httptest.NewRecorder()
-
 	app.handleReport(rr, req)
 
 	if rr.Code != http.StatusBadRequest {
@@ -383,7 +351,6 @@ func TestHandleReport_EmptyHostname(t *testing.T) {
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/report", bytes.NewReader(body))
 	rr := httptest.NewRecorder()
-
 	app.handleReport(rr, req)
 
 	if rr.Code != http.StatusBadRequest {
@@ -398,7 +365,6 @@ func TestHandleAddWebhook_InvalidJSON(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks", bytes.NewReader([]byte("bad")))
 	rr := httptest.NewRecorder()
-
 	app.handleAddWebhook(rr, req)
 
 	if rr.Code != http.StatusBadRequest {
@@ -412,7 +378,6 @@ func TestHandleAddWebhook_MissingFields(t *testing.T) {
 	body, _ := json.Marshal(map[string]string{"url": "", "event": ""})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks", bytes.NewReader(body))
 	rr := httptest.NewRecorder()
-
 	app.handleAddWebhook(rr, req)
 
 	if rr.Code != http.StatusBadRequest {
@@ -426,7 +391,6 @@ func TestHandleAddWebhook_InvalidURL(t *testing.T) {
 	body, _ := json.Marshal(map[string]string{"url": "ftp://bad", "event": "update_success"})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks", bytes.NewReader(body))
 	rr := httptest.NewRecorder()
-
 	app.handleAddWebhook(rr, req)
 
 	if rr.Code != http.StatusBadRequest {
@@ -439,15 +403,11 @@ func TestHandleAddWebhook_InvalidURL(t *testing.T) {
 func TestHandleGetHost_InvalidID(t *testing.T) {
 	app := testApp(t)
 
-	// Without mux vars, the handler should return 400
-	// We need to set up mux vars
+	// Without mux vars, parseHostID returns "host id missing" → 400
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/hosts/abc", nil)
 	rr := httptest.NewRecorder()
-
-	// Without mux routing, vars won't be set. We test the ID parsing separately.
 	app.handleGetHost(rr, req)
 
-	// Should be BadRequest because mux vars won't be found
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d", rr.Code)
 	}

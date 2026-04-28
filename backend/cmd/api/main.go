@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -18,105 +19,37 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/knownhosts"
 	"ubuntu-auto-update/backend/pkg/config"
 	"ubuntu-auto-update/backend/pkg/db"
 	"ubuntu-auto-update/backend/pkg/middleware"
 	"ubuntu-auto-update/backend/pkg/models"
+	sshpkg "ubuntu-auto-update/backend/pkg/ssh"
 	"ubuntu-auto-update/backend/pkg/webhook"
 )
 
-// maxRequestBodySize limits POST request bodies to 1MB
+// maxRequestBodySize limits POST request bodies to 1MB.
 const maxRequestBodySize = 1 << 20
 
 type Application struct {
-	DB         *pgxpool.Pool
-	TokenStore *middleware.TokenStore
-	AuthConfig *middleware.AuthConfig
+	DB             *pgxpool.Pool
+	TokenStore     *middleware.TokenStore
+	AuthConfig     *middleware.AuthConfig
+	CORS           *middleware.CORSConfig
+	SSHDialer      *sshpkg.Dialer
+	WebhookSender  *webhook.Dispatcher
 }
 
-func (app *Application) sendWebhook(event string, payload interface{}) {
-	webhooks, err := db.GetWebhooks(context.Background(), app.DB, event)
+// dispatchWebhooks resolves subscribers for an event and queues deliveries.
+// Returns immediately; deliveries run on the dispatcher's goroutines.
+func (app *Application) dispatchWebhooks(event string, payload interface{}) {
+	hooks, err := db.GetWebhooks(context.Background(), app.DB, event)
 	if err != nil {
-		log.Errorf("Failed to get webhooks: %v", err)
+		log.Errorf("Failed to get webhooks for event %s: %v", event, err)
 		return
 	}
-
-	for _, wh := range webhooks {
-		if err := webhook.Send(wh.URL, payload); err != nil {
-			log.Errorf("Failed to deliver webhook to %s: %v", wh.URL, err)
-		}
+	for _, h := range hooks {
+		app.WebhookSender.Deliver(context.Background(), h.URL, payload)
 	}
-}
-
-func (app *Application) corsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Get allowed origins from environment, default to localhost dev servers
-		allowedOrigins := os.Getenv("CORS_ALLOWED_ORIGINS")
-		if allowedOrigins == "" {
-			allowedOrigins = "http://localhost:5173,http://localhost:3000"
-		}
-
-		origin := r.Header.Get("Origin")
-		if origin != "" {
-			for _, allowed := range strings.Split(allowedOrigins, ",") {
-				if strings.TrimSpace(allowed) == origin || strings.TrimSpace(allowed) == "*" {
-					w.Header().Set("Access-Control-Allow-Origin", origin)
-					break
-				}
-			}
-		}
-
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
-
-		// Handle preflight requests
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-
-		next.ServeHTTP(w, r)
-	})
-}
-
-// authMiddleware accepts an auth_token cookie (web UI) or a Bearer Authorization header (agents).
-// It validates the token against the in-memory store and attaches the user to the request context.
-func (app *Application) authMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tokenString := extractToken(r, app.AuthConfig.CookieName)
-		if tokenString == "" {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
-		}
-
-		username, valid := app.TokenStore.ValidateToken(tokenString)
-		if !valid {
-			http.Error(w, "Unauthorized: invalid or expired token", http.StatusUnauthorized)
-			return
-		}
-
-		log.Debugf("Authenticated request from user: %s", username)
-		ctx := context.WithValue(r.Context(), middleware.UserContextKey, &middleware.User{
-			Username: username,
-			Role:     "admin",
-		})
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
-}
-
-// extractToken returns the auth token from the cookie or the Bearer Authorization header, or "".
-func extractToken(r *http.Request, cookieName string) string {
-	if cookie, err := r.Cookie(cookieName); err == nil && cookie.Value != "" {
-		return cookie.Value
-	}
-	authHeader := r.Header.Get("Authorization")
-	if strings.HasPrefix(authHeader, "Bearer ") {
-		return strings.TrimPrefix(authHeader, "Bearer ")
-	}
-	return ""
 }
 
 func main() {
@@ -135,30 +68,37 @@ func main() {
 
 	tokenStore := middleware.GetTokenStore()
 	authConfig := middleware.NewAuthConfig()
-
-	// Start background token cleanup every 5 minutes
 	middleware.StartTokenCleanup(tokenStore, 5*time.Minute)
 
+	corsCfg := middleware.LoadCORSConfig()
+	dispatcher := webhook.NewDispatcher()
+
 	app := &Application{
-		DB:         dbPool,
-		TokenStore: tokenStore,
-		AuthConfig: authConfig,
+		DB:            dbPool,
+		TokenStore:    tokenStore,
+		AuthConfig:    authConfig,
+		CORS:          corsCfg,
+		SSHDialer:     sshpkg.NewDialer(dbPool),
+		WebhookSender: dispatcher,
 	}
 
 	r := mux.NewRouter()
-	r.Use(app.corsMiddleware)
+	r.Use(middleware.ErrorHandler) // panic recovery + request logging
+	r.Use(middleware.CORS(corsCfg))
+
 	r.HandleFunc("/api/v1/health", app.handleHealth).Methods(http.MethodGet)
 	r.HandleFunc("/api/v1/enroll", app.handleEnroll).Methods(http.MethodPost)
 	r.HandleFunc("/api/v1/login", app.handleLogin).Methods(http.MethodPost, http.MethodOptions)
 	r.HandleFunc("/api/v1/logout", app.handleLogout).Methods(http.MethodPost, http.MethodOptions)
 
 	api := r.PathPrefix("/api/v1").Subrouter()
-	api.Use(app.authMiddleware)
+	api.Use(middleware.TokenAuthMiddleware(tokenStore, authConfig))
 	api.HandleFunc("/report", app.handleReport).Methods(http.MethodPost)
 	api.HandleFunc("/hosts", app.handleListHosts).Methods(http.MethodGet)
 	api.HandleFunc("/hosts/{id}", app.handleGetHost).Methods(http.MethodGet)
-	api.HandleFunc("/hosts/{id}/run-update", app.handleRunUpdate)
-	api.HandleFunc("/hosts/{id}/execute-script", app.handleExecuteScript)
+	// WebSocket handshakes are GET-only; be explicit so the routes don't accept other verbs.
+	api.HandleFunc("/hosts/{id}/preview-updates", app.handlePreviewUpdates).Methods(http.MethodGet)
+	api.HandleFunc("/hosts/{id}/execute-script", app.handleExecuteScript).Methods(http.MethodGet)
 	api.HandleFunc("/hosts/{id}/ssh-key", app.handleAddSSHKey).Methods(http.MethodPost)
 	api.HandleFunc("/webhooks", app.handleAddWebhook).Methods(http.MethodPost)
 
@@ -167,7 +107,6 @@ func main() {
 		port = "8080"
 	}
 
-	// Use http.Server with proper timeouts for production readiness
 	srv := &http.Server{
 		Addr:         ":" + port,
 		Handler:      r,
@@ -176,7 +115,6 @@ func main() {
 		IdleTimeout:  120 * time.Second,
 	}
 
-	// Graceful shutdown
 	go func() {
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -189,6 +127,7 @@ func main() {
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			log.Errorf("Server shutdown error: %v", err)
 		}
+		dispatcher.Wait()
 	}()
 
 	log.Infof("Starting server on :%s", port)
@@ -210,13 +149,11 @@ func (app *Application) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		EnrollmentToken string `json:"enrollment_token"`
 		Hostname        string `json:"hostname"`
 	}
-
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	// Validate hostname
 	req.Hostname = strings.TrimSpace(req.Hostname)
 	if req.Hostname == "" {
 		http.Error(w, "Hostname cannot be empty", http.StatusBadRequest)
@@ -229,12 +166,11 @@ func (app *Application) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Enrollment not configured", http.StatusInternalServerError)
 		return
 	}
-	if req.EnrollmentToken != enrollmentToken {
+	if subtle.ConstantTimeCompare([]byte(req.EnrollmentToken), []byte(enrollmentToken)) != 1 {
 		http.Error(w, "Invalid enrollment token", http.StatusUnauthorized)
 		return
 	}
 
-	// Generate a new random authentication token
 	authToken, err := middleware.GenerateSecureToken()
 	if err != nil {
 		log.Errorf("Failed to generate token: %v", err)
@@ -242,9 +178,7 @@ func (app *Application) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Store the token for agent authentication (long-lived: 365 days)
 	app.TokenStore.StoreToken(authToken, "agent:"+req.Hostname, 365*24*time.Hour)
-
 	log.Infof("Agent enrolled successfully: %s", req.Hostname)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -262,15 +196,12 @@ func (app *Application) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	adminUsername := os.Getenv("ADMIN_USERNAME")
 	adminPassword := os.Getenv("ADMIN_PASSWORD")
-
-	// SECURITY: Do NOT log credential values, only the misconfiguration.
 	if adminUsername == "" || adminPassword == "" {
 		log.Error("ADMIN_USERNAME or ADMIN_PASSWORD environment variables not set")
 		writeJSONError(w, http.StatusInternalServerError, "Authentication not configured on server")
 		return
 	}
 
-	// Constant-time comparison to avoid timing attacks against the admin credential.
 	userOK := subtle.ConstantTimeCompare([]byte(req.Username), []byte(adminUsername)) == 1
 	passOK := subtle.ConstantTimeCompare([]byte(req.Password), []byte(adminPassword)) == 1
 	if !userOK || !passOK {
@@ -300,10 +231,11 @@ func writeJSONError(w http.ResponseWriter, status int, message string) {
 }
 
 // handleLogout invalidates the caller's token (if present) and clears the auth cookie.
-// Always returns 200 — clients should treat logout as best-effort.
 func (app *Application) handleLogout(w http.ResponseWriter, r *http.Request) {
-	if token := extractToken(r, app.AuthConfig.CookieName); token != "" {
-		app.TokenStore.RemoveToken(token)
+	if cookie, err := r.Cookie(app.AuthConfig.CookieName); err == nil && cookie.Value != "" {
+		app.TokenStore.RemoveToken(cookie.Value)
+	} else if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
+		app.TokenStore.RemoveToken(strings.TrimPrefix(h, "Bearer "))
 	}
 	middleware.ClearAuthCookie(w, app.AuthConfig)
 	w.WriteHeader(http.StatusOK)
@@ -349,23 +281,28 @@ func (app *Application) handleListHosts(w http.ResponseWriter, r *http.Request) 
 	json.NewEncoder(w).Encode(hosts)
 }
 
-func (app *Application) handleGetHost(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	idStr, ok := vars["id"]
+func parseHostID(r *http.Request) (int32, error) {
+	idStr, ok := mux.Vars(r)["id"]
 	if !ok {
-		http.Error(w, "Host ID not found in URL", http.StatusBadRequest)
-		return
+		return 0, errors.New("host id missing")
 	}
-
 	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		return 0, err
+	}
+	return int32(id), nil
+}
+
+func (app *Application) handleGetHost(w http.ResponseWriter, r *http.Request) {
+	id, err := parseHostID(r)
 	if err != nil {
 		http.Error(w, "Invalid host ID", http.StatusBadRequest)
 		return
 	}
 
-	host, err := db.GetHost(r.Context(), app.DB, int32(id))
+	host, err := db.GetHost(r.Context(), app.DB, id)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			http.Error(w, "Host not found", http.StatusNotFound)
 		} else {
 			log.Errorf("Failed to get host: %v", err)
@@ -378,26 +315,15 @@ func (app *Application) handleGetHost(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(host)
 }
 
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		// Validate WebSocket origin against allowed origins
-		origin := r.Header.Get("Origin")
-		if origin == "" {
-			return false
-		}
-
-		allowedOrigins := os.Getenv("CORS_ALLOWED_ORIGINS")
-		if allowedOrigins == "" {
-			allowedOrigins = "http://localhost:5173,http://localhost:3000"
-		}
-
-		for _, allowed := range strings.Split(allowedOrigins, ",") {
-			if strings.TrimSpace(allowed) == origin || strings.TrimSpace(allowed) == "*" {
-				return true
-			}
-		}
-		return false
-	},
+// upgrader is used for WebSocket handshakes. CheckOrigin uses the cached
+// CORSConfig captured in main, but the upgrader itself is created per request
+// because it closes over the app pointer.
+func (app *Application) wsUpgrader() websocket.Upgrader {
+	return websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			return app.CORS.IsAllowed(r.Header.Get("Origin"))
+		},
+	}
 }
 
 func (app *Application) handleAddWebhook(w http.ResponseWriter, r *http.Request) {
@@ -409,7 +335,6 @@ func (app *Application) handleAddWebhook(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Validate webhook URL and event
 	req.URL = strings.TrimSpace(req.URL)
 	req.Event = strings.TrimSpace(req.Event)
 	if req.URL == "" || req.Event == "" {
@@ -426,21 +351,13 @@ func (app *Application) handleAddWebhook(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "Failed to add webhook", http.StatusInternalServerError)
 		return
 	}
-
 	w.WriteHeader(http.StatusCreated)
 }
 
 func (app *Application) handleAddSSHKey(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 
-	vars := mux.Vars(r)
-	idStr, ok := vars["id"]
-	if !ok {
-		http.Error(w, "Host ID not found in URL", http.StatusBadRequest)
-		return
-	}
-
-	id, err := strconv.Atoi(idStr)
+	id, err := parseHostID(r)
 	if err != nil {
 		http.Error(w, "Invalid host ID", http.StatusBadRequest)
 		return
@@ -450,7 +367,6 @@ func (app *Application) handleAddSSHKey(w http.ResponseWriter, r *http.Request) 
 		SshUser    string `json:"ssh_user"`
 		PrivateKey string `json:"private_key"`
 	}
-
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
@@ -463,13 +379,12 @@ func (app *Application) handleAddSSHKey(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if err := db.AddSSHKey(r.Context(), app.DB, int32(id), req.PrivateKey); err != nil {
+	if err := db.AddSSHKey(r.Context(), app.DB, id, req.PrivateKey); err != nil {
 		log.Errorf("Failed to add SSH key: %v", err)
 		http.Error(w, "Failed to add SSH key", http.StatusInternalServerError)
 		return
 	}
 
-	// also update the ssh_user in the hosts table
 	if _, err := app.DB.Exec(r.Context(), `UPDATE hosts SET ssh_user = $1 WHERE id = $2`, req.SshUser, id); err != nil {
 		log.Errorf("Failed to update ssh_user: %v", err)
 		http.Error(w, "Failed to update ssh_user", http.StatusInternalServerError)
@@ -480,19 +395,13 @@ func (app *Application) handleAddSSHKey(w http.ResponseWriter, r *http.Request) 
 }
 
 func (app *Application) handleExecuteScript(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	idStr, ok := vars["id"]
-	if !ok {
-		http.Error(w, "Host ID not found in URL", http.StatusBadRequest)
-		return
-	}
-
-	id, err := strconv.Atoi(idStr)
+	id, err := parseHostID(r)
 	if err != nil {
 		http.Error(w, "Invalid host ID", http.StatusBadRequest)
 		return
 	}
 
+	upgrader := app.wsUpgrader()
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Errorf("Failed to upgrade to websocket: %v", err)
@@ -500,60 +409,20 @@ func (app *Application) handleExecuteScript(w http.ResponseWriter, r *http.Reque
 	}
 	defer conn.Close()
 
-	// Read the script from the WebSocket connection
 	_, script, err := conn.ReadMessage()
 	if err != nil {
 		log.Errorf("Failed to read script from websocket: %v", err)
 		return
 	}
 
-	key, err := db.GetSSHKey(r.Context(), app.DB, int32(id))
+	sshClient, _, err := app.SSHDialer.ConnectToHost(r.Context(), id)
 	if err != nil {
-		log.Errorf("Failed to get SSH key: %v", err)
-		conn.WriteMessage(websocket.TextMessage, []byte("Failed to get SSH key"))
-		return
-	}
-
-	host, err := db.GetHost(r.Context(), app.DB, int32(id))
-	if err != nil {
-		log.Errorf("Failed to get host: %v", err)
-		conn.WriteMessage(websocket.TextMessage, []byte("Failed to get host"))
-		return
-	}
-
-	signer, err := ssh.ParsePrivateKey([]byte(key.PrivateKey))
-	if err != nil {
-		log.Errorf("Failed to parse private key: %v", err)
-		conn.WriteMessage(websocket.TextMessage, []byte("Failed to parse private key"))
-		return
-	}
-
-	hostKeyCallback, err := knownhosts.New("known_hosts")
-	if err != nil {
-		log.Errorf("Failed to create host key callback: %v", err)
-		conn.WriteMessage(websocket.TextMessage, []byte("Failed to create host key callback"))
-		return
-	}
-
-	// Establish SSH connection
-	sshConfig := &ssh.ClientConfig{
-		User: host.SshUser,
-		Auth: []ssh.AuthMethod{
-			ssh.PublicKeys(signer),
-		},
-		HostKeyCallback: hostKeyCallback,
-		Timeout:         30 * time.Second,
-	}
-
-	sshClient, err := ssh.Dial("tcp", host.Hostname+":22", sshConfig)
-	if err != nil {
-		log.Errorf("Failed to dial SSH: %v", err)
-		conn.WriteMessage(websocket.TextMessage, []byte("Failed to dial SSH: "+err.Error()))
+		log.Errorf("SSH connect to host %d failed: %v", id, err)
+		conn.WriteMessage(websocket.TextMessage, []byte("SSH connect failed: "+err.Error()))
 		return
 	}
 	defer sshClient.Close()
 
-	// Run the script
 	session, err := sshClient.NewSession()
 	if err != nil {
 		log.Errorf("Failed to create SSH session: %v", err)
@@ -564,29 +433,23 @@ func (app *Application) handleExecuteScript(w http.ResponseWriter, r *http.Reque
 
 	output, err := session.CombinedOutput(string(script))
 	if err != nil {
-		log.Errorf("Failed to run script: %v", err)
-		conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("Failed to run script: %s", err.Error())))
-		conn.WriteMessage(websocket.TextMessage, output)
-		return
+		log.Errorf("Script execution failed: %v", err)
+		conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("Script execution failed: %s", err.Error())))
 	}
-
 	conn.WriteMessage(websocket.TextMessage, output)
 }
 
-func (app *Application) handleRunUpdate(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	idStr, ok := vars["id"]
-	if !ok {
-		http.Error(w, "Host ID not found in URL", http.StatusBadRequest)
-		return
-	}
-
-	id, err := strconv.Atoi(idStr)
+// handlePreviewUpdates runs `apt list --upgradable` over SSH and streams output
+// back to the client. It does NOT actually upgrade packages — that requires
+// sudo and an explicit user-driven action; see issue #14 in the audit.
+func (app *Application) handlePreviewUpdates(w http.ResponseWriter, r *http.Request) {
+	id, err := parseHostID(r)
 	if err != nil {
 		http.Error(w, "Invalid host ID", http.StatusBadRequest)
 		return
 	}
 
+	upgrader := app.wsUpgrader()
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Errorf("Failed to upgrade to websocket: %v", err)
@@ -594,56 +457,18 @@ func (app *Application) handleRunUpdate(w http.ResponseWriter, r *http.Request) 
 	}
 	defer conn.Close()
 
-	host, err := db.GetHost(r.Context(), app.DB, int32(id))
+	sshClient, host, err := app.SSHDialer.ConnectToHost(r.Context(), id)
 	if err != nil {
-		log.Errorf("Failed to get host: %v", err)
-		app.sendWebhook("update_failure", map[string]interface{}{"host_id": id, "error": err.Error()})
-		conn.WriteMessage(websocket.TextMessage, []byte("Failed to get host"))
-		return
-	}
-
-	key, err := db.GetSSHKey(r.Context(), app.DB, int32(id))
-	if err != nil {
-		log.Errorf("Failed to get SSH key: %v", err)
-		conn.WriteMessage(websocket.TextMessage, []byte("Failed to get SSH key"))
-		return
-	}
-
-	signer, err := ssh.ParsePrivateKey([]byte(key.PrivateKey))
-	if err != nil {
-		log.Errorf("Failed to parse private key: %v", err)
-		conn.WriteMessage(websocket.TextMessage, []byte("Failed to parse private key"))
-		return
-	}
-
-	hostKeyCallback, err := knownhosts.New("known_hosts")
-	if err != nil {
-		log.Errorf("Failed to create host key callback: %v", err)
-		conn.WriteMessage(websocket.TextMessage, []byte("Failed to create host key callback"))
-		return
-	}
-
-	// Establish SSH connection
-	sshConfig := &ssh.ClientConfig{
-		User: host.SshUser,
-		Auth: []ssh.AuthMethod{
-			ssh.PublicKeys(signer),
-		},
-		HostKeyCallback: hostKeyCallback,
-		Timeout:         30 * time.Second,
-	}
-
-	sshClient, err := ssh.Dial("tcp", host.Hostname+":22", sshConfig)
-	if err != nil {
-		log.Errorf("Failed to dial SSH: %v", err)
-		db.UpsertHost(r.Context(), app.DB, host.Hostname, host.SshUser, "", "", fmt.Sprintf("Failed to dial SSH: %v", err))
-		app.sendWebhook("update_failure", map[string]interface{}{"host_id": id, "error": err.Error()})
-		conn.WriteMessage(websocket.TextMessage, []byte("Failed to dial SSH: "+err.Error()))
+		log.Errorf("SSH connect to host %d failed: %v", id, err)
+		if host.Hostname != "" {
+			db.UpsertHost(r.Context(), app.DB, host.Hostname, host.SshUser, "", "", err.Error())
+		}
+		app.dispatchWebhooks("update_failure", map[string]interface{}{"host_id": id, "error": err.Error()})
+		conn.WriteMessage(websocket.TextMessage, []byte("SSH connect failed: "+err.Error()))
 		return
 	}
 	defer sshClient.Close()
 
-	// Run commands (modified for demo - these work without sudo)
 	commands := []string{
 		"echo 'Starting Ubuntu update check...'",
 		"apt list --upgradable",
@@ -654,19 +479,21 @@ func (app *Application) handleRunUpdate(w http.ResponseWriter, r *http.Request) 
 		session, err := sshClient.NewSession()
 		if err != nil {
 			log.Errorf("Failed to create SSH session: %v", err)
-			db.UpsertHost(r.Context(), app.DB, host.Hostname, host.SshUser, "", "", fmt.Sprintf("Failed to create SSH session: %v", err))
-			app.sendWebhook("update_failure", map[string]interface{}{"host_id": id, "error": err.Error()})
+			db.UpsertHost(r.Context(), app.DB, host.Hostname, host.SshUser, "", "", err.Error())
+			app.dispatchWebhooks("update_failure", map[string]interface{}{"host_id": id, "error": err.Error()})
 			conn.WriteMessage(websocket.TextMessage, []byte("Failed to create SSH session: "+err.Error()))
 			return
 		}
-		defer session.Close()
 
 		output, err := session.CombinedOutput(cmd)
+		session.Close()
 		if err != nil {
-			log.Errorf("Failed to run command '%s': %v", cmd, err)
-			db.UpsertHost(r.Context(), app.DB, host.Hostname, host.SshUser, "", string(output), fmt.Sprintf("Failed to run command '%s': %v", cmd, err))
-			app.sendWebhook("update_failure", map[string]interface{}{"host_id": id, "command": cmd, "error": err.Error(), "output": string(output)})
-			conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("Failed to run command '%s': %s", cmd, err.Error())))
+			log.Errorf("Failed to run command %q: %v", cmd, err)
+			db.UpsertHost(r.Context(), app.DB, host.Hostname, host.SshUser, "", string(output), err.Error())
+			app.dispatchWebhooks("update_failure", map[string]interface{}{
+				"host_id": id, "command": cmd, "error": err.Error(), "output": string(output),
+			})
+			conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("Failed to run command %q: %s", cmd, err.Error())))
 			conn.WriteMessage(websocket.TextMessage, output)
 			return
 		}
@@ -675,13 +502,11 @@ func (app *Application) handleRunUpdate(w http.ResponseWriter, r *http.Request) 
 		db.UpsertHost(r.Context(), app.DB, host.Hostname, host.SshUser, string(output), "", "")
 	}
 
-	app.sendWebhook("update_success", map[string]interface{}{"host_id": id})
+	app.dispatchWebhooks("preview_success", map[string]interface{}{"host_id": id})
 }
 
 func (app *Application) handleHealth(w http.ResponseWriter, r *http.Request) {
-	// Check database connection
-	err := app.DB.Ping(r.Context())
-	if err != nil {
+	if err := app.DB.Ping(r.Context()); err != nil {
 		log.Errorf("Database health check failed: %v", err)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -698,7 +523,6 @@ func (app *Application) handleHealth(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":    "healthy",
 		"database":  "connected",
-		"version":   "1.0.0",
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	})
 }

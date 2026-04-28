@@ -6,33 +6,33 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"ubuntu-auto-update/backend/pkg/crypto"
 	"ubuntu-auto-update/backend/pkg/models"
 )
+
+const hostColumns = `id, hostname, ssh_user, created_at, updated_at, last_seen, update_output, upgrade_output, error`
 
 func NewConnection(ctx context.Context) (*pgxpool.Pool, error) {
 	dbUrl := os.Getenv("DATABASE_URL")
 	if dbUrl == "" {
 		return nil, fmt.Errorf("DATABASE_URL environment variable not set")
 	}
-
 	pool, err := pgxpool.New(ctx, dbUrl)
 	if err != nil {
-		return nil, fmt.Errorf("unable to connect to database: %v", err)
+		return nil, fmt.Errorf("unable to connect to database: %w", err)
 	}
-
 	return pool, nil
 }
 
-func UpsertHost(ctx context.Context, db *pgxpool.Pool, hostname string, sshUser string, updateOutput string, upgradeOutput string, errorMsg string) (models.Host, error) {
-	var host models.Host
+func UpsertHost(ctx context.Context, db *pgxpool.Pool, hostname, sshUser, updateOutput, upgradeOutput, errorMsg string) (models.Host, error) {
 	var hostError sql.NullString
 	if errorMsg != "" {
-		hostError.String = errorMsg
-		hostError.Valid = true
+		hostError = sql.NullString{String: errorMsg, Valid: true}
 	}
-	err := db.QueryRow(ctx, `
+
+	rows, err := db.Query(ctx, `
 		INSERT INTO hosts (hostname, ssh_user, last_seen, update_output, upgrade_output, error)
 		VALUES ($1, $2, NOW(), $3, $4, $5)
 		ON CONFLICT (hostname) DO UPDATE
@@ -41,54 +41,52 @@ func UpsertHost(ctx context.Context, db *pgxpool.Pool, hostname string, sshUser 
 		    update_output = $3,
 		    upgrade_output = $4,
 		    error = $5
-		RETURNING id, hostname, ssh_user, created_at, updated_at, last_seen, update_output, upgrade_output, error
-	`, hostname, sshUser, updateOutput, upgradeOutput, hostError).Scan(&host.ID, &host.Hostname, &host.SshUser, &host.CreatedAt, &host.UpdatedAt, &host.LastSeen, &host.UpdateOutput, &host.UpgradeOutput, &host.Error)
-	return host, err
+		RETURNING `+hostColumns,
+		hostname, sshUser, updateOutput, upgradeOutput, hostError)
+	if err != nil {
+		return models.Host{}, err
+	}
+	return pgx.CollectExactlyOneRow(rows, pgx.RowToStructByName[models.Host])
 }
 
 func ListHosts(ctx context.Context, db *pgxpool.Pool) ([]models.Host, error) {
-	rows, err := db.Query(ctx, `SELECT id, hostname, ssh_user, created_at, updated_at, last_seen, update_output, upgrade_output, error FROM hosts ORDER BY hostname`)
+	rows, err := db.Query(ctx, `SELECT `+hostColumns+` FROM hosts ORDER BY hostname`)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	hosts := make([]models.Host, 0) // Return empty slice, not nil (avoids null JSON)
-	for rows.Next() {
-		var host models.Host
-		if err := rows.Scan(&host.ID, &host.Hostname, &host.SshUser, &host.CreatedAt, &host.UpdatedAt, &host.LastSeen, &host.UpdateOutput, &host.UpgradeOutput, &host.Error); err != nil {
-			return nil, err
-		}
-		hosts = append(hosts, host)
-	}
-
-	// Check for errors from iterating over rows
-	if err := rows.Err(); err != nil {
+	hosts, err := pgx.CollectRows(rows, pgx.RowToStructByName[models.Host])
+	if err != nil {
 		return nil, err
 	}
-
+	if hosts == nil {
+		hosts = []models.Host{} // avoid `null` in JSON
+	}
 	return hosts, nil
 }
 
 func GetHost(ctx context.Context, db *pgxpool.Pool, id int32) (models.Host, error) {
-	var host models.Host
-	err := db.QueryRow(ctx, `SELECT id, hostname, ssh_user, created_at, updated_at, last_seen, update_output, upgrade_output, error FROM hosts WHERE id = $1`, id).Scan(&host.ID, &host.Hostname, &host.SshUser, &host.CreatedAt, &host.UpdatedAt, &host.LastSeen, &host.UpdateOutput, &host.UpgradeOutput, &host.Error)
-	return host, err
+	rows, err := db.Query(ctx, `SELECT `+hostColumns+` FROM hosts WHERE id = $1`, id)
+	if err != nil {
+		return models.Host{}, err
+	}
+	return pgx.CollectExactlyOneRow(rows, pgx.RowToStructByName[models.Host])
 }
 
 func GetSSHKey(ctx context.Context, db *pgxpool.Pool, hostID int32) (models.SSHKey, error) {
-	var key models.SSHKey
-	err := db.QueryRow(ctx, `SELECT host_id, private_key FROM ssh_keys WHERE host_id = $1`, hostID).Scan(&key.HostID, &key.PrivateKey)
+	rows, err := db.Query(ctx, `SELECT host_id, private_key FROM ssh_keys WHERE host_id = $1`, hostID)
+	if err != nil {
+		return models.SSHKey{}, err
+	}
+	key, err := pgx.CollectExactlyOneRow(rows, pgx.RowToStructByName[models.SSHKey])
 	if err != nil {
 		return models.SSHKey{}, err
 	}
 
-	decryptedKey, err := crypto.Decrypt(key.PrivateKey)
+	decrypted, err := crypto.Decrypt(key.PrivateKey)
 	if err != nil {
 		return models.SSHKey{}, fmt.Errorf("failed to decrypt SSH key for host %d: %w", hostID, err)
 	}
-
-	key.PrivateKey = decryptedKey
+	key.PrivateKey = decrypted
 	return key, nil
 }
 
@@ -97,7 +95,6 @@ func AddSSHKey(ctx context.Context, db *pgxpool.Pool, hostID int32, privateKey s
 	if err != nil {
 		return fmt.Errorf("failed to encrypt SSH key: %w", err)
 	}
-
 	_, err = db.Exec(ctx, `
 		INSERT INTO ssh_keys (host_id, private_key)
 		VALUES ($1, $2)
@@ -112,32 +109,12 @@ func GetWebhooks(ctx context.Context, db *pgxpool.Pool, event string) ([]models.
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	webhooks := make([]models.Webhook, 0) // Return empty slice, not nil
-	for rows.Next() {
-		var webhook models.Webhook
-		if err := rows.Scan(&webhook.ID, &webhook.URL, &webhook.Event); err != nil {
-			return nil, err
-		}
-		webhooks = append(webhooks, webhook)
-	}
-
-	// Check for errors from iterating over rows
-	if err := rows.Err(); err != nil {
+	hooks, err := pgx.CollectRows(rows, pgx.RowToStructByName[models.Webhook])
+	if err != nil {
 		return nil, err
 	}
-
-	return webhooks, nil
-}
-
-// StoreAgentToken stores a hashed agent authentication token
-func StoreAgentToken(ctx context.Context, db *pgxpool.Pool, hostID int32, tokenHash string) error {
-	_, err := db.Exec(ctx, `
-		INSERT INTO agent_tokens (host_id, token_hash, created_at, is_active, scopes)
-		VALUES ($1, $2, NOW(), TRUE, ARRAY['update', 'report'])
-		ON CONFLICT (host_id) DO UPDATE
-		SET token_hash = $2, is_active = TRUE
-	`, hostID, tokenHash)
-	return err
+	if hooks == nil {
+		hooks = []models.Webhook{}
+	}
+	return hooks, nil
 }
