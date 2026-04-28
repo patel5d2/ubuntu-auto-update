@@ -3,11 +3,13 @@ import { Link } from 'react-router-dom';
 import { formatDistanceToNow } from 'date-fns';
 import { apiGet } from '../api';
 import type { Host } from '../types';
+import { AddHostModal } from '../components/AddHostModal';
 
 export function HostList() {
   const [hosts, setHosts] = useState<Host[]>([]);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState('');
+  const [addOpen, setAddOpen] = useState(false);
 
   useEffect(() => {
     apiGet<Host[]>('/api/v1/hosts')
@@ -22,22 +24,35 @@ export function HostList() {
       .finally(() => setLoading(false));
   }, []);
 
+  const handleCreated = (host: Host) => {
+    // Optimistic insert + sort by hostname so it lands in the right place.
+    setHosts(prev => [...prev, host].sort((a, b) => a.hostname.localeCompare(b.hostname)));
+  };
+
   if (loading) return <div aria-busy="true">Loading hosts...</div>;
 
   if (fetchError) {
     return (
       <div>
-        <h2>Managed Hosts</h2>
+        <header style={hostListHeaderStyle}>
+          <h2 style={{ margin: 0 }}>Managed Hosts</h2>
+          <button onClick={() => setAddOpen(true)} style={{ width: 'auto' }}>+ Add Host</button>
+        </header>
         <article style={{ color: 'var(--pico-color-red-500)' }}>
           <p>{fetchError}</p>
         </article>
+        <AddHostModal open={addOpen} onClose={() => setAddOpen(false)} onCreated={handleCreated} />
       </div>
     );
   }
 
   return (
     <div>
-      <h2>Managed Hosts</h2>
+      <header style={hostListHeaderStyle}>
+        <h2 style={{ margin: 0 }}>Managed Hosts</h2>
+        <button onClick={() => setAddOpen(true)} style={{ width: 'auto' }}>+ Add Host</button>
+      </header>
+
       <table>
         <thead>
           <tr>
@@ -60,11 +75,23 @@ export function HostList() {
           ))}
           {hosts.length === 0 && (
             <tr>
-              <td colSpan={3} style={{ textAlign: 'center' }}>No hosts registered yet.</td>
+              <td colSpan={3} style={{ textAlign: 'center' }}>
+                No hosts registered yet. Click <strong>+ Add Host</strong> to add one.
+              </td>
             </tr>
           )}
         </tbody>
       </table>
+
+      <AddHostModal open={addOpen} onClose={() => setAddOpen(false)} onCreated={handleCreated} />
     </div>
   );
 }
+
+const hostListHeaderStyle: React.CSSProperties = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  marginBottom: '1rem',
+  gap: '0.5rem',
+};

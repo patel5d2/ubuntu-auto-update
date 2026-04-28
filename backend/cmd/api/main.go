@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -19,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/crypto/ssh"
 	"ubuntu-auto-update/backend/pkg/config"
 	"ubuntu-auto-update/backend/pkg/db"
 	"ubuntu-auto-update/backend/pkg/middleware"
@@ -95,11 +98,17 @@ func main() {
 	api.Use(middleware.TokenAuthMiddleware(tokenStore, authConfig))
 	api.HandleFunc("/report", app.handleReport).Methods(http.MethodPost)
 	api.HandleFunc("/hosts", app.handleListHosts).Methods(http.MethodGet)
+	api.HandleFunc("/hosts", app.handleCreateHost).Methods(http.MethodPost)
 	api.HandleFunc("/hosts/{id}", app.handleGetHost).Methods(http.MethodGet)
+	api.HandleFunc("/hosts/{id}", app.handleUpdateHost).Methods(http.MethodPatch)
+	api.HandleFunc("/hosts/{id}", app.handleDeleteHost).Methods(http.MethodDelete)
 	// WebSocket handshakes are GET-only; be explicit so the routes don't accept other verbs.
 	api.HandleFunc("/hosts/{id}/preview-updates", app.handlePreviewUpdates).Methods(http.MethodGet)
+	api.HandleFunc("/hosts/{id}/run-update", app.handleRunUpdate).Methods(http.MethodGet)
 	api.HandleFunc("/hosts/{id}/execute-script", app.handleExecuteScript).Methods(http.MethodGet)
 	api.HandleFunc("/hosts/{id}/ssh-key", app.handleAddSSHKey).Methods(http.MethodPost)
+	api.HandleFunc("/hosts/{id}/runs", app.handleListRuns).Methods(http.MethodGet)
+	api.HandleFunc("/runs/{id}", app.handleGetRun).Methods(http.MethodGet)
 	api.HandleFunc("/webhooks", app.handleAddWebhook).Methods(http.MethodPost)
 
 	port := os.Getenv("API_PORT")
@@ -315,6 +324,134 @@ func (app *Application) handleGetHost(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(host)
 }
 
+// handleCreateHost lets an operator create a host record without going
+// through agent enrollment. Returns 409 Conflict if the hostname already
+// exists.
+func (app *Application) handleCreateHost(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+
+	var req struct {
+		Hostname string `json:"hostname"`
+		SshUser  string `json:"ssh_user"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	req.Hostname = strings.TrimSpace(req.Hostname)
+	req.SshUser = strings.TrimSpace(req.SshUser)
+	if req.Hostname == "" {
+		writeJSONError(w, http.StatusBadRequest, "Hostname is required")
+		return
+	}
+	if req.SshUser == "" {
+		req.SshUser = "root"
+	}
+
+	host, err := db.CreateHost(r.Context(), app.DB, req.Hostname, req.SshUser)
+	if err != nil {
+		if errors.Is(err, db.ErrDuplicateHostname) {
+			writeJSONError(w, http.StatusConflict, "A host with that hostname already exists")
+			return
+		}
+		log.Errorf("Failed to create host: %v", err)
+		writeJSONError(w, http.StatusInternalServerError, "Failed to create host")
+		return
+	}
+
+	log.Infof("Operator created host: %s (ID: %d)", host.Hostname, host.ID)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(host)
+}
+
+// handleUpdateHost applies a partial update to a host. Only ssh_user is
+// editable today; hostname is the natural key and changing it would break
+// the agent-report upsert path.
+func (app *Application) handleUpdateHost(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+
+	id, err := parseHostID(r)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Invalid host ID")
+		return
+	}
+
+	var req struct {
+		SshUser *string `json:"ssh_user,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if req.SshUser == nil {
+		writeJSONError(w, http.StatusBadRequest, "Nothing to update; only ssh_user is editable")
+		return
+	}
+	sshUser := strings.TrimSpace(*req.SshUser)
+	if sshUser == "" {
+		writeJSONError(w, http.StatusBadRequest, "ssh_user cannot be empty")
+		return
+	}
+
+	host, err := db.UpdateHostSSHUser(r.Context(), app.DB, id, sshUser)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusNotFound, "Host not found")
+			return
+		}
+		log.Errorf("Failed to update host: %v", err)
+		writeJSONError(w, http.StatusInternalServerError, "Failed to update host")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(host)
+}
+
+// handleDeleteHost removes a host and (via ON DELETE CASCADE) its SSH key.
+// To prevent click-through accidents and replay-style CSRF on long-lived
+// sessions, the client must echo the hostname in X-Confirm-Hostname.
+func (app *Application) handleDeleteHost(w http.ResponseWriter, r *http.Request) {
+	id, err := parseHostID(r)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Invalid host ID")
+		return
+	}
+
+	host, err := db.GetHost(r.Context(), app.DB, id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusNotFound, "Host not found")
+			return
+		}
+		log.Errorf("Failed to look up host before delete: %v", err)
+		writeJSONError(w, http.StatusInternalServerError, "Failed to retrieve host")
+		return
+	}
+
+	if r.Header.Get("X-Confirm-Hostname") != host.Hostname {
+		writeJSONError(w, http.StatusPreconditionFailed,
+			"X-Confirm-Hostname header must match the host's hostname")
+		return
+	}
+
+	rows, err := db.DeleteHost(r.Context(), app.DB, id)
+	if err != nil {
+		log.Errorf("Failed to delete host %d: %v", id, err)
+		writeJSONError(w, http.StatusInternalServerError, "Failed to delete host")
+		return
+	}
+	if rows == 0 {
+		writeJSONError(w, http.StatusNotFound, "Host not found")
+		return
+	}
+
+	log.Infof("Deleted host: %s (ID: %d)", host.Hostname, id)
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // upgrader is used for WebSocket handshakes. CheckOrigin uses the cached
 // CORSConfig captured in main, but the upgrader itself is created per request
 // because it closes over the app pointer.
@@ -439,16 +576,75 @@ func (app *Application) handleExecuteScript(w http.ResponseWriter, r *http.Reque
 	conn.WriteMessage(websocket.TextMessage, output)
 }
 
-// handlePreviewUpdates runs `apt list --upgradable` over SSH and streams output
-// back to the client. It does NOT actually upgrade packages — that requires
-// sudo and an explicit user-driven action; see issue #14 in the audit.
+// previewCommands runs read-only and never escalates privileges.
+var previewCommands = []string{
+	"echo '== ubuntu-auto-update: preview =='",
+	"apt list --upgradable",
+}
+
+// updateCommandTemplate is built per-host because it changes based on whether
+// the configured ssh_user is root. The flags neutralize the most common
+// dpkg interactive prompts during apt-get upgrade.
+const aptNoninteractive = `DEBIAN_FRONTEND=noninteractive ` +
+	`apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" -y `
+
+// buildUpdateScript returns the shell line that does an actual upgrade.
+// Non-root users get a `sudo -n` prefix so the operation fails fast (rather
+// than hanging on a password prompt) when passwordless sudo isn't set up.
+func buildUpdateScript(sshUser string) string {
+	prefix := ""
+	if sshUser != "" && sshUser != "root" {
+		prefix = "sudo -n "
+	}
+	return "set -o pipefail; " +
+		"echo '== ubuntu-auto-update: update =='; " +
+		prefix + aptNoninteractive + "update && " +
+		prefix + aptNoninteractive + "upgrade"
+}
+
+// handlePreviewUpdates runs read-only `apt list --upgradable` over SSH and
+// streams output back to the client. Persists a 'preview' update_runs row
+// for history.
 func (app *Application) handlePreviewUpdates(w http.ResponseWriter, r *http.Request) {
 	id, err := parseHostID(r)
 	if err != nil {
 		http.Error(w, "Invalid host ID", http.StatusBadRequest)
 		return
 	}
+	app.runHostCommand(w, r, id, models.RunKindPreview, previewCommands)
+}
 
+// handleRunUpdate runs an actual `apt-get upgrade -y` over SSH. This is the
+// "single click to update" entry point — it changes system state, so the
+// frontend gates it behind a confirmation dialog.
+func (app *Application) handleRunUpdate(w http.ResponseWriter, r *http.Request) {
+	id, err := parseHostID(r)
+	if err != nil {
+		http.Error(w, "Invalid host ID", http.StatusBadRequest)
+		return
+	}
+	// Look up the host first so we know which ssh_user is configured; that
+	// controls whether the script needs `sudo -n`.
+	host, err := db.GetHost(r.Context(), app.DB, id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.Error(w, "Host not found", http.StatusNotFound)
+			return
+		}
+		log.Errorf("Failed to get host %d: %v", id, err)
+		http.Error(w, "Failed to retrieve host", http.StatusInternalServerError)
+		return
+	}
+	app.runHostCommand(w, r, id, models.RunKindUpdate, []string{buildUpdateScript(host.SshUser)})
+}
+
+// runHostCommand is the shared engine for preview/update WebSockets. It:
+//   - upgrades to a WebSocket
+//   - inserts an update_runs row in 'running'
+//   - SSHes, executes commands, tees stdout/stderr to (a) the websocket and
+//     (b) the run row, with the row's output column capped at 1 MiB
+//   - marks the run terminal in all exit paths
+func (app *Application) runHostCommand(w http.ResponseWriter, r *http.Request, hostID int32, kind models.RunKind, commands []string) {
 	upgrader := app.wsUpgrader()
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -457,52 +653,201 @@ func (app *Application) handlePreviewUpdates(w http.ResponseWriter, r *http.Requ
 	}
 	defer conn.Close()
 
-	sshClient, host, err := app.SSHDialer.ConnectToHost(r.Context(), id)
+	user := middleware.GetUserFromContext(r)
+	triggeredBy := "unknown"
+	if user != nil {
+		triggeredBy = user.Username
+	}
+
+	// Decoupled context for DB writes: if the websocket disconnects mid-run,
+	// we still want to persist the final status. Use a fresh background ctx
+	// that we cancel ourselves on hard exit.
+	dbCtx, cancelDB := context.WithCancel(context.Background())
+	defer cancelDB()
+
+	run, err := db.CreateRun(dbCtx, app.DB, hostID, triggeredBy, kind)
 	if err != nil {
-		log.Errorf("SSH connect to host %d failed: %v", id, err)
-		if host.Hostname != "" {
-			db.UpsertHost(r.Context(), app.DB, host.Hostname, host.SshUser, "", "", err.Error())
+		log.Errorf("Failed to create run row: %v", err)
+		conn.WriteMessage(websocket.TextMessage, []byte("Failed to create run record: "+err.Error()))
+		return
+	}
+	emit(conn, fmt.Sprintf("[run #%d started by %s]\n", run.ID, triggeredBy))
+
+	finishStatus := models.RunStatusFailed
+	finishExit := -1
+	finishErr := ""
+	defer func() {
+		if err := db.FinishRun(dbCtx, app.DB, run.ID, finishStatus, finishExit, finishErr); err != nil {
+			log.Errorf("Failed to mark run %d terminal: %v", run.ID, err)
 		}
-		app.dispatchWebhooks("update_failure", map[string]interface{}{"host_id": id, "error": err.Error()})
-		conn.WriteMessage(websocket.TextMessage, []byte("SSH connect failed: "+err.Error()))
+		emit(conn, fmt.Sprintf("\n[run #%d finished: %s]\n", run.ID, finishStatus))
+	}()
+
+	sshClient, host, err := app.SSHDialer.ConnectToHost(r.Context(), hostID)
+	if err != nil {
+		finishErr = fmt.Sprintf("ssh connect: %v", err)
+		log.Errorf("SSH connect to host %d failed: %v", hostID, err)
+		emit(conn, "SSH connect failed: "+err.Error())
+		_, _ = db.AppendRunOutput(dbCtx, app.DB, run.ID, "SSH connect failed: "+err.Error()+"\n")
+		app.dispatchWebhooks("update_failure", map[string]interface{}{"host_id": hostID, "error": err.Error()})
 		return
 	}
 	defer sshClient.Close()
 
-	commands := []string{
-		"echo 'Starting Ubuntu update check...'",
-		"apt list --upgradable",
-		"echo 'Update check completed. Note: Actual updates require sudo privileges.'",
-	}
-
 	for _, cmd := range commands {
-		session, err := sshClient.NewSession()
-		if err != nil {
-			log.Errorf("Failed to create SSH session: %v", err)
-			db.UpsertHost(r.Context(), app.DB, host.Hostname, host.SshUser, "", "", err.Error())
-			app.dispatchWebhooks("update_failure", map[string]interface{}{"host_id": id, "error": err.Error()})
-			conn.WriteMessage(websocket.TextMessage, []byte("Failed to create SSH session: "+err.Error()))
-			return
-		}
-
-		output, err := session.CombinedOutput(cmd)
-		session.Close()
-		if err != nil {
-			log.Errorf("Failed to run command %q: %v", cmd, err)
-			db.UpsertHost(r.Context(), app.DB, host.Hostname, host.SshUser, "", string(output), err.Error())
+		exitCode, runErr := app.streamCommand(r.Context(), conn, sshClient, run.ID, cmd)
+		if runErr != nil {
+			finishErr = runErr.Error()
+			finishExit = exitCode
+			emit(conn, fmt.Sprintf("\nCommand failed (exit %d): %s\n", exitCode, runErr.Error()))
 			app.dispatchWebhooks("update_failure", map[string]interface{}{
-				"host_id": id, "command": cmd, "error": err.Error(), "output": string(output),
+				"host_id": hostID, "run_id": run.ID, "command": cmd, "error": runErr.Error(),
 			})
-			conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("Failed to run command %q: %s", cmd, err.Error())))
-			conn.WriteMessage(websocket.TextMessage, output)
 			return
 		}
-
-		conn.WriteMessage(websocket.TextMessage, output)
-		db.UpsertHost(r.Context(), app.DB, host.Hostname, host.SshUser, string(output), "", "")
 	}
 
-	app.dispatchWebhooks("preview_success", map[string]interface{}{"host_id": id})
+	finishStatus = models.RunStatusSucceeded
+	finishExit = 0
+	event := "preview_success"
+	if kind == models.RunKindUpdate {
+		event = "update_success"
+		// Clear the host's stored error on a successful update so the badge resets.
+		_, _ = db.UpsertHost(dbCtx, app.DB, host.Hostname, host.SshUser, host.UpdateOutput, host.UpgradeOutput, "")
+	}
+	app.dispatchWebhooks(event, map[string]interface{}{"host_id": hostID, "run_id": run.ID})
+}
+
+// streamCommand runs one shell line on the existing SSH client, fans
+// stdout/stderr to (a) the websocket and (b) the run row's output column,
+// and returns the remote exit code (-1 if the SSH layer itself failed).
+func (app *Application) streamCommand(ctx context.Context, conn *websocket.Conn, client *ssh.Client, runID int32, cmd string) (int, error) {
+	session, err := client.NewSession()
+	if err != nil {
+		return -1, fmt.Errorf("create ssh session: %w", err)
+	}
+	defer session.Close()
+
+	stdout, err := session.StdoutPipe()
+	if err != nil {
+		return -1, fmt.Errorf("stdout pipe: %w", err)
+	}
+	stderr, err := session.StderrPipe()
+	if err != nil {
+		return -1, fmt.Errorf("stderr pipe: %w", err)
+	}
+
+	if err := session.Start(cmd); err != nil {
+		return -1, fmt.Errorf("start ssh command: %w", err)
+	}
+
+	emit(conn, "$ "+cmd+"\n")
+
+	// Decoupled write ctx so the DB rows still get a final flush even if r.Context()
+	// is cancelled by a client disconnect mid-stream.
+	dbCtx, cancelDB := context.WithCancel(context.Background())
+	defer cancelDB()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); pumpReader(ctx, dbCtx, conn, app.DB, runID, stdout) }()
+	go func() { defer wg.Done(); pumpReader(ctx, dbCtx, conn, app.DB, runID, stderr) }()
+
+	wg.Wait()
+	err = session.Wait()
+	if err == nil {
+		return 0, nil
+	}
+	var exitErr *ssh.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitStatus(), fmt.Errorf("exit status %d", exitErr.ExitStatus())
+	}
+	return -1, err
+}
+
+// pumpReader copies a reader to the websocket and the DB row in 4 KiB chunks.
+// Backpressure: the websocket write is the slow path; if a client is gone the
+// chunk is silently dropped and we keep persisting to DB so history remains
+// accurate.
+func pumpReader(ctx context.Context, dbCtx context.Context, conn *websocket.Conn, pool *pgxpool.Pool, runID int32, src io.Reader) {
+	buf := make([]byte, 4096)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		n, err := src.Read(buf)
+		if n > 0 {
+			chunk := string(buf[:n])
+			// Best-effort write to the websocket — connection might be closed.
+			_ = conn.WriteMessage(websocket.TextMessage, []byte(chunk))
+			// Persistent record. AppendRunOutput is a no-op past the cap.
+			_, _ = db.AppendRunOutput(dbCtx, pool, runID, chunk)
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+func emit(conn *websocket.Conn, line string) {
+	_ = conn.WriteMessage(websocket.TextMessage, []byte(line))
+}
+
+// handleListRuns returns the most recent runs for a host, newest-first.
+// Output column is included verbatim — it's already capped at 1 MiB.
+func (app *Application) handleListRuns(w http.ResponseWriter, r *http.Request) {
+	id, err := parseHostID(r)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Invalid host ID")
+		return
+	}
+
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil {
+			limit = parsed
+		}
+	}
+
+	runs, err := db.ListRunsForHost(r.Context(), app.DB, id, limit)
+	if err != nil {
+		log.Errorf("Failed to list runs for host %d: %v", id, err)
+		writeJSONError(w, http.StatusInternalServerError, "Failed to retrieve runs")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(runs)
+}
+
+// handleGetRun returns a single run by id, including its full output buffer.
+func (app *Application) handleGetRun(w http.ResponseWriter, r *http.Request) {
+	idStr, ok := mux.Vars(r)["id"]
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "run id missing")
+		return
+	}
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Invalid run ID")
+		return
+	}
+
+	run, err := db.GetRun(r.Context(), app.DB, int32(id))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusNotFound, "Run not found")
+			return
+		}
+		log.Errorf("Failed to get run %d: %v", id, err)
+		writeJSONError(w, http.StatusInternalServerError, "Failed to retrieve run")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(run)
 }
 
 func (app *Application) handleHealth(w http.ResponseWriter, r *http.Request) {

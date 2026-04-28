@@ -3,14 +3,20 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"ubuntu-auto-update/backend/pkg/crypto"
 	"ubuntu-auto-update/backend/pkg/models"
 )
+
+// ErrDuplicateHostname is returned when CreateHost hits a unique constraint
+// on hostname (Postgres error 23505).
+var ErrDuplicateHostname = errors.New("hostname already exists")
 
 const hostColumns = `id, hostname, ssh_user, created_at, updated_at, last_seen, update_output, upgrade_output, error`
 
@@ -62,6 +68,60 @@ func ListHosts(ctx context.Context, db *pgxpool.Pool) ([]models.Host, error) {
 		hosts = []models.Host{} // avoid `null` in JSON
 	}
 	return hosts, nil
+}
+
+// CreateHost inserts a new host record. Returns ErrDuplicateHostname if a
+// row with the same hostname already exists. Use UpsertHost only from the
+// agent-report path; operator-driven creation should be strict.
+//
+// pgx v5 may defer the underlying SQL error from Query() until row
+// collection runs, so we check both code paths.
+func CreateHost(ctx context.Context, db *pgxpool.Pool, hostname, sshUser string) (models.Host, error) {
+	rows, err := db.Query(ctx, `
+		INSERT INTO hosts (hostname, ssh_user, last_seen, update_output, upgrade_output)
+		VALUES ($1, $2, NOW(), '', '')
+		RETURNING `+hostColumns,
+		hostname, sshUser)
+	if err != nil {
+		return models.Host{}, mapInsertHostError(err)
+	}
+	host, err := pgx.CollectExactlyOneRow(rows, pgx.RowToStructByName[models.Host])
+	if err != nil {
+		return models.Host{}, mapInsertHostError(err)
+	}
+	return host, nil
+}
+
+func mapInsertHostError(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return ErrDuplicateHostname
+	}
+	return err
+}
+
+// UpdateHostSSHUser updates only the ssh_user column. Returns pgx.ErrNoRows
+// if no row matches.
+func UpdateHostSSHUser(ctx context.Context, db *pgxpool.Pool, id int32, sshUser string) (models.Host, error) {
+	rows, err := db.Query(ctx, `
+		UPDATE hosts SET ssh_user = $2 WHERE id = $1
+		RETURNING `+hostColumns,
+		id, sshUser)
+	if err != nil {
+		return models.Host{}, err
+	}
+	return pgx.CollectExactlyOneRow(rows, pgx.RowToStructByName[models.Host])
+}
+
+// DeleteHost removes the host row. ssh_keys is set to ON DELETE CASCADE in
+// the schema, so the encrypted key disappears with it. Returns the number
+// of rows affected so the handler can distinguish 404 from success.
+func DeleteHost(ctx context.Context, db *pgxpool.Pool, id int32) (int64, error) {
+	tag, err := db.Exec(ctx, `DELETE FROM hosts WHERE id = $1`, id)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }
 
 func GetHost(ctx context.Context, db *pgxpool.Pool, id int32) (models.Host, error) {

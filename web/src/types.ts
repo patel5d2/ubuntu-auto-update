@@ -15,3 +15,19 @@ export interface Webhook {
   url: string;
   event: string;
 }
+
+export type RunKind = 'preview' | 'update';
+export type RunStatus = 'running' | 'succeeded' | 'failed' | 'cancelled';
+
+export interface UpdateRun {
+  id: number;
+  host_id: number;
+  triggered_by: string;
+  kind: RunKind;
+  status: RunStatus;
+  exit_code: number | null;
+  started_at: string;
+  finished_at: string | null;
+  output: string;
+  error: string | null;
+}

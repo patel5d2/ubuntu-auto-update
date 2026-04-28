@@ -55,6 +55,21 @@ export function apiPost<T>(endpoint: string, body: unknown): Promise<T> {
   return request<T>(endpoint, { method: 'POST', body: JSON.stringify(body) });
 }
 
+export function apiPatch<T>(endpoint: string, body: unknown): Promise<T> {
+  return request<T>(endpoint, { method: 'PATCH', body: JSON.stringify(body) });
+}
+
+/**
+ * DELETE with optional extra headers — destructive endpoints expect a
+ * confirmation header (e.g. X-Confirm-Hostname for /hosts/{id}).
+ */
+export function apiDelete<T = void>(
+  endpoint: string,
+  headers?: Record<string, string>,
+): Promise<T> {
+  return request<T>(endpoint, { method: 'DELETE', headers });
+}
+
 export async function apiLogin(username: string, password: string): Promise<{ token: string }> {
   // Login must not redirect on 401 — it would loop. Show the error to the user instead.
   const data = await request<{ token: string }>(
