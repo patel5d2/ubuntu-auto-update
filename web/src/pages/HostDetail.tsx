@@ -17,6 +17,7 @@ export function HostDetail() {
   const [runs, setRuns] = useState<UpdateRun[]>([]);
   const [tab, setTab] = useState<TabId>('overview');
   const [savingKey, setSavingKey] = useState(false);
+  const [autoConfiguring, setAutoConfiguring] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [testing, setTesting] = useState(false);
 
@@ -111,6 +112,38 @@ export function HostDetail() {
       toast.show(err instanceof Error ? err.message : 'Failed to save key.', 'error');
     } finally {
       setSavingKey(false);
+    }
+  };
+
+  const handleAutoConfigure = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!hostId) return;
+
+    const data = new FormData(event.currentTarget);
+    const sshUser = String(data.get('autoSshUser') ?? '').trim();
+    const password = String(data.get('autoPassword') ?? '');
+    if (password === '') {
+      toast.show('Password is required for auto-configure.', 'error');
+      return;
+    }
+
+    setAutoConfiguring(true);
+    try {
+      const body: Record<string, string> = { password };
+      if (sshUser) body.ssh_user = sshUser;
+      const result = await apiPost<{ ok: boolean; sudo_configured: boolean }>(
+        `/api/v1/hosts/${hostId}/auto-configure`,
+        body,
+      );
+      const sudoNote = result.sudo_configured ? '' : ' (root user — no sudo needed)';
+      toast.show(`Configured. Key generated and installed${sudoNote}.`, 'success');
+      // Reset the form so the password isn't left sitting in the DOM.
+      event.currentTarget.reset();
+      apiGet<Host>(`/api/v1/hosts/${hostId}`).then(setHost).catch(() => {});
+    } catch (err) {
+      toast.show(err instanceof Error ? err.message : 'Auto-configure failed.', 'error');
+    } finally {
+      setAutoConfiguring(false);
     }
   };
 
@@ -269,26 +302,72 @@ export function HostDetail() {
               {testing ? 'Testing…' : 'Test connection'}
             </button>
           </div>
-          <form onSubmit={handleSaveKey}>
-            <div className="grid">
-              <label htmlFor="sshUser">
-                SSH User
-                <input type="text" id="sshUser" name="sshUser" placeholder="root" defaultValue={host.ssh_user} required />
-              </label>
-              <label htmlFor="privateKey">
-                Private Key
-                <textarea id="privateKey" name="privateKey" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" required rows={10} />
-              </label>
-            </div>
-            <small style={{ display: 'block', opacity: 0.7, marginBottom: '0.5rem' }}>
-              For non-root SSH users, configure passwordless sudo on the target — apt-get
-              upgrade requires it. Use <strong>Test connection</strong> to verify before
-              triggering an update.
-            </small>
-            <button type="submit" disabled={savingKey} aria-busy={savingKey || undefined}>
-              {savingKey ? 'Saving…' : 'Save Key'}
-            </button>
-          </form>
+          <details open style={{ marginTop: '1rem' }}>
+            <summary><strong>Auto-configure with password</strong> (recommended)</summary>
+            <form onSubmit={handleAutoConfigure}>
+              <div className="grid">
+                <label htmlFor="autoSshUser">
+                  SSH User
+                  <input
+                    type="text"
+                    id="autoSshUser"
+                    name="autoSshUser"
+                    placeholder="root"
+                    defaultValue={host.ssh_user}
+                  />
+                </label>
+                <label htmlFor="autoPassword">
+                  SSH Password
+                  <input
+                    type="password"
+                    id="autoPassword"
+                    name="autoPassword"
+                    placeholder="Used once, never stored"
+                    autoComplete="new-password"
+                    required
+                  />
+                </label>
+              </div>
+              <small style={{ display: 'block', opacity: 0.7, marginBottom: '0.5rem' }}>
+                We sign in once with this password, generate a fresh SSH key,
+                install it on the host, set up passwordless sudo for non-root
+                users, and store the private key encrypted. The password lives
+                in memory for the request only.
+              </small>
+              <button
+                type="submit"
+                disabled={autoConfiguring}
+                aria-busy={autoConfiguring || undefined}
+              >
+                {autoConfiguring ? 'Configuring…' : 'Configure host'}
+              </button>
+            </form>
+          </details>
+
+          <details style={{ marginTop: '1rem' }}>
+            <summary>Paste an existing private key (advanced)</summary>
+            <form onSubmit={handleSaveKey}>
+              <div className="grid">
+                <label htmlFor="sshUser">
+                  SSH User
+                  <input type="text" id="sshUser" name="sshUser" placeholder="root" defaultValue={host.ssh_user} required />
+                </label>
+                <label htmlFor="privateKey">
+                  Private Key
+                  <textarea id="privateKey" name="privateKey" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" required rows={10} />
+                </label>
+              </div>
+              <small style={{ display: 'block', opacity: 0.7, marginBottom: '0.5rem' }}>
+                The matching public key must already be in the SSH user's
+                <code>~/.ssh/authorized_keys</code> on the target. For non-root
+                users, passwordless sudo must also be configured. Use
+                <strong> Test connection</strong> to verify.
+              </small>
+              <button type="submit" disabled={savingKey} aria-busy={savingKey || undefined}>
+                {savingKey ? 'Saving…' : 'Save Key'}
+              </button>
+            </form>
+          </details>
         </section>
       )}
 

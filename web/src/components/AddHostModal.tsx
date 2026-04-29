@@ -16,6 +16,7 @@ const HOSTNAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 export function AddHostModal({ open, onClose, onCreated }: AddHostModalProps) {
   const [submitting, setSubmitting] = useState(false);
+  const [enrolling, setEnrolling] = useState(false);
   const [hostnameError, setHostnameError] = useState('');
   const toast = useToast();
   const firstFieldRef = useRef<HTMLInputElement>(null);
@@ -46,6 +47,7 @@ export function AddHostModal({ open, onClose, onCreated }: AddHostModalProps) {
     const data = new FormData(event.currentTarget);
     const hostname = String(data.get('hostname') ?? '').trim();
     const sshUser = String(data.get('ssh_user') ?? '').trim();
+    const password = String(data.get('password') ?? '');
 
     if (!HOSTNAME_PATTERN.test(hostname)) {
       setHostnameError('Use letters, digits, dot, dash, or underscore.');
@@ -53,13 +55,26 @@ export function AddHostModal({ open, onClose, onCreated }: AddHostModalProps) {
     }
     setHostnameError('');
     setSubmitting(true);
+    setEnrolling(password !== '');
 
     try {
-      const host = await apiPost<Host>('/api/v1/hosts', {
+      const body: Record<string, string> = {
         hostname,
         ssh_user: sshUser || 'root',
-      });
-      toast.show(`Host "${host.hostname}" added.`, 'success');
+      };
+      // When a password is supplied the backend does a one-shot enrollment
+      // (password SSH → generate keypair → install pubkey → configure
+      // passwordless sudo → store encrypted private key). The password is
+      // never persisted; it lives in memory for the length of the call.
+      if (password !== '') body.password = password;
+
+      const host = await apiPost<Host>('/api/v1/hosts', body);
+      toast.show(
+        password !== ''
+          ? `Host "${host.hostname}" added and configured.`
+          : `Host "${host.hostname}" added.`,
+        'success',
+      );
       onCreated(host);
       onClose();
     } catch (err) {
@@ -67,6 +82,7 @@ export function AddHostModal({ open, onClose, onCreated }: AddHostModalProps) {
       toast.show(message, 'error');
     } finally {
       setSubmitting(false);
+      setEnrolling(false);
     }
   };
 
@@ -113,9 +129,22 @@ export function AddHostModal({ open, onClose, onCreated }: AddHostModalProps) {
             />
           </label>
 
+          <label htmlFor="add-host-password">
+            SSH password <small style={{ opacity: 0.7 }}>(optional — auto-configures the host)</small>
+            <input
+              id="add-host-password"
+              type="password"
+              name="password"
+              placeholder="Leave blank to paste a key later"
+              autoComplete="new-password"
+            />
+          </label>
+
           <small>
-            You can attach an SSH private key from the host's detail page after
-            it appears in the list.
+            With a password we sign in once, generate a fresh SSH key, install
+            it on the host, set up passwordless sudo, and store the private key
+            encrypted. Your password is used in-memory only and never saved.
+            Leave it blank to paste a key manually from the host's detail page.
           </small>
 
           <footer style={{ marginTop: '1rem' }}>
@@ -128,7 +157,7 @@ export function AddHostModal({ open, onClose, onCreated }: AddHostModalProps) {
               Cancel
             </button>
             <button type="submit" disabled={submitting} aria-busy={submitting || undefined}>
-              {submitting ? 'Adding…' : 'Add host'}
+              {enrolling ? 'Configuring host…' : submitting ? 'Adding…' : 'Add host'}
             </button>
           </footer>
         </form>
