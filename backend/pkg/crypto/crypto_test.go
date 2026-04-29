@@ -13,13 +13,20 @@ func setupTestKey(t *testing.T) func() {
 	keyFile := filepath.Join(tmpDir, "encryption.key")
 	os.WriteFile(keyFile, key, 0600)
 	old := os.Getenv("ENCRYPTION_KEY_FILE")
+	oldEnv := os.Getenv("ENCRYPTION_KEY")
+	os.Unsetenv("ENCRYPTION_KEY")
 	os.Setenv("ENCRYPTION_KEY_FILE", keyFile)
+	resetKeyCacheForTest()
 	return func() {
 		if old == "" {
 			os.Unsetenv("ENCRYPTION_KEY_FILE")
 		} else {
 			os.Setenv("ENCRYPTION_KEY_FILE", old)
 		}
+		if oldEnv != "" {
+			os.Setenv("ENCRYPTION_KEY", oldEnv)
+		}
+		resetKeyCacheForTest()
 	}
 }
 
@@ -84,8 +91,10 @@ func TestDecrypt_Tampered(t *testing.T) {
 }
 
 func TestEncrypt_MissingKeyFile(t *testing.T) {
+	os.Unsetenv("ENCRYPTION_KEY")
 	os.Setenv("ENCRYPTION_KEY_FILE", "/nonexistent/key")
-	defer os.Unsetenv("ENCRYPTION_KEY_FILE")
+	resetKeyCacheForTest()
+	defer func() { os.Unsetenv("ENCRYPTION_KEY_FILE"); resetKeyCacheForTest() }()
 	if _, err := Encrypt("test"); err == nil {
 		t.Error("expected error for missing key")
 	}
@@ -95,10 +104,43 @@ func TestEncrypt_InvalidKeySize(t *testing.T) {
 	tmpDir := t.TempDir()
 	kf := filepath.Join(tmpDir, "bad.key")
 	os.WriteFile(kf, []byte("short"), 0600)
+	os.Unsetenv("ENCRYPTION_KEY")
 	os.Setenv("ENCRYPTION_KEY_FILE", kf)
-	defer os.Unsetenv("ENCRYPTION_KEY_FILE")
+	resetKeyCacheForTest()
+	defer func() { os.Unsetenv("ENCRYPTION_KEY_FILE"); resetKeyCacheForTest() }()
 	if _, err := Encrypt("test"); err == nil {
 		t.Error("expected error for invalid key size")
+	}
+}
+
+func TestEncrypt_EnvKeyTakesPrecedence(t *testing.T) {
+	// Hex encoding of a 32-byte key.
+	hexKey := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	t.Setenv("ENCRYPTION_KEY", hexKey)
+	t.Setenv("ENCRYPTION_KEY_FILE", "/this/path/should/be/ignored")
+	resetKeyCacheForTest()
+	defer resetKeyCacheForTest()
+
+	enc, err := Encrypt("hello")
+	if err != nil {
+		t.Fatalf("Encrypt with env key: %v", err)
+	}
+	dec, err := Decrypt(enc)
+	if err != nil {
+		t.Fatalf("Decrypt with env key: %v", err)
+	}
+	if dec != "hello" {
+		t.Errorf("got %q, want hello", dec)
+	}
+}
+
+func TestEncrypt_EnvKeyMustBeHex(t *testing.T) {
+	t.Setenv("ENCRYPTION_KEY", "not-hex!!")
+	resetKeyCacheForTest()
+	defer resetKeyCacheForTest()
+
+	if _, err := Encrypt("x"); err == nil {
+		t.Error("expected error for non-hex env key")
 	}
 }
 

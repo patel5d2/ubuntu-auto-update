@@ -16,6 +16,9 @@ import (
 	"ubuntu-auto-update/backend/pkg/models"
 )
 
+// dialer pool getter for the DB-backed host-key callback.
+func (d *Dialer) Pool() *pgxpool.Pool { return d.pool }
+
 const dialTimeout = 30 * time.Second
 
 // Dialer holds a cached host-key callback so we don't reread known_hosts on
@@ -31,15 +34,37 @@ func NewDialer(pool *pgxpool.Pool) *Dialer {
 	return &Dialer{pool: pool}
 }
 
-// hostKeyCallback returns a cached known_hosts callback. The known_hosts path
-// can be overridden with KNOWN_HOSTS_FILE; defaults to ./known_hosts.
+// hostKeyCallback returns the configured host-key callback.
+//
+// HOST_KEY_STORE selects the source:
+//   - "db"   (default when HOST_KEY_STORE is unset and a pool is available)
+//            uses the host_keys table from migration 000013, so all backend
+//            replicas share the same view of fingerprints.
+//   - "file" reads the on-disk known_hosts file at KNOWN_HOSTS_FILE
+//            (default ./known_hosts) — kept as an escape hatch for legacy
+//            deployments and for offline testing.
 func (d *Dialer) hostKeyCallback() (ssh.HostKeyCallback, error) {
 	d.hostKeyOnce.Do(func() {
-		path := os.Getenv("KNOWN_HOSTS_FILE")
-		if path == "" {
-			path = "known_hosts"
+		mode := os.Getenv("HOST_KEY_STORE")
+		if mode == "" {
+			if d.pool != nil {
+				mode = "db"
+			} else {
+				mode = "file"
+			}
 		}
-		d.hostKeyCB, d.hostKeyErr = knownhosts.New(path)
+		switch mode {
+		case "db":
+			d.hostKeyCB = d.dbHostKeyCallback()
+		case "file":
+			path := os.Getenv("KNOWN_HOSTS_FILE")
+			if path == "" {
+				path = "known_hosts"
+			}
+			d.hostKeyCB, d.hostKeyErr = knownhosts.New(path)
+		default:
+			d.hostKeyErr = fmt.Errorf("unknown HOST_KEY_STORE %q (want \"db\" or \"file\")", mode)
+		}
 	})
 	return d.hostKeyCB, d.hostKeyErr
 }

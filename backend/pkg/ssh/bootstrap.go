@@ -24,10 +24,37 @@ import (
 // passwordless sudo couldn't be set up (e.g. an /etc/sudoers.d/ already
 // pinned the user to a different rule).
 type BootstrapResult struct {
-	PrivateKeyPEM  string
-	AuthorizedKey  string
-	HostKey        gossh.PublicKey
-	SudoConfigured bool
+	PrivateKeyPEM     string
+	AuthorizedKey     string
+	HostKey           gossh.PublicKey
+	HostKeyFingerprint string
+	SudoConfigured    bool
+	SudoScope         string
+}
+
+// BootstrapOptions tunes what Bootstrap configures on the remote host. Empty
+// values fall back to safer defaults.
+//
+// SudoScope controls what passwordless sudo is granted to a non-root user:
+//   - "apt"  (default): only apt / apt-get / unattended-upgrade. Smallest
+//     blast radius if the backend is compromised — operator can still trigger
+//     updates but cannot exfiltrate arbitrary files.
+//   - "full": NOPASSWD: ALL. Required for /api/v1/hosts/{id}/execute-script.
+type BootstrapOptions struct {
+	SudoScope string
+}
+
+// scopedSudoersBody returns the body of the sudoers drop-in for `user` and
+// `scope`. Scope "apt" pins the rule to apt / apt-get / unattended-upgrade;
+// "full" matches the original behaviour (NOPASSWD: ALL).
+func scopedSudoersBody(user, scope string) string {
+	switch scope {
+	case "full":
+		return fmt.Sprintf("%s ALL=(ALL) NOPASSWD: ALL\n", user)
+	default:
+		// Default to "apt" — the safer choice.
+		return fmt.Sprintf("%s ALL=(ALL) NOPASSWD: /usr/bin/apt, /usr/bin/apt-get, /usr/bin/unattended-upgrade\n", user)
+	}
 }
 
 // Bootstrap runs the one-shot enrollment dance against a host:
@@ -49,10 +76,23 @@ type BootstrapResult struct {
 // Callers should pass the same value they store in hosts.hostname so
 // later key-based dials look the entry up correctly.
 func (d *Dialer) Bootstrap(ctx context.Context, hostname, sshUser, password string) (BootstrapResult, error) {
+	return d.BootstrapOpts(ctx, hostname, sshUser, password, BootstrapOptions{})
+}
+
+// BootstrapOpts is the option-aware entry point. Bootstrap remains for callers
+// that don't care about scope.
+func (d *Dialer) BootstrapOpts(ctx context.Context, hostname, sshUser, password string, opts BootstrapOptions) (BootstrapResult, error) {
 	hostname = strings.TrimSpace(hostname)
 	sshUser = strings.TrimSpace(sshUser)
 	if hostname == "" || sshUser == "" || password == "" {
 		return BootstrapResult{}, errors.New("hostname, ssh_user, and password are all required")
+	}
+	scope := opts.SudoScope
+	if scope == "" {
+		scope = "apt"
+	}
+	if scope != "apt" && scope != "full" {
+		return BootstrapResult{}, fmt.Errorf("invalid sudo scope %q: want \"apt\" or \"full\"", scope)
 	}
 
 	addr := hostname
@@ -123,7 +163,7 @@ chmod 600 "$HOME/.ssh/authorized_keys"
 	sudoConfigured := sshUser == "root"
 	if sshUser != "root" {
 		sudoersFile := "uau-" + sanitizeForFilename(sshUser)
-		sudoersContent := fmt.Sprintf("%s ALL=(ALL) NOPASSWD: ALL\n", sshUser)
+		sudoersContent := scopedSudoersBody(sshUser, scope)
 
 		// We pipe (password + "\n" + sudoersContent) into `sudo -S sh -c '<cmd>'`.
 		// sudo -S reads the password from the first line of stdin, strips it,
@@ -179,31 +219,161 @@ chmod 600 "$HOME/.ssh/authorized_keys"
 	}
 
 	return BootstrapResult{
-		PrivateKeyPEM:  privPEM,
-		AuthorizedKey:  authorizedKey,
-		HostKey:        capturedKey,
-		SudoConfigured: sudoConfigured,
+		PrivateKeyPEM:      privPEM,
+		AuthorizedKey:      authorizedKey,
+		HostKey:            capturedKey,
+		HostKeyFingerprint: gossh.FingerprintSHA256(capturedKey),
+		SudoConfigured:     sudoConfigured,
+		SudoScope:          scope,
 	}, nil
 }
 
-// AppendKnownHost adds a single host-key line and invalidates the cached
-// known_hosts callback so the next regular SSH dial picks up the entry
-// without a backend restart.
-func (d *Dialer) AppendKnownHost(hostname string, key gossh.PublicKey) error {
-	path := os.Getenv("KNOWN_HOSTS_FILE")
-	if path == "" {
-		path = "known_hosts"
-	}
-
-	line := knownhosts.Line([]string{hostname}, key)
-
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+// RotateKey installs a fresh ed25519 keypair on a host that we already have
+// SSH access to, then revokes the old key from authorized_keys. Used by
+// /api/v1/hosts/{id}/rotate-key. Returns the new private key PEM so the
+// caller can persist it.
+//
+// Requires: existing key already works (we dial with it), the user has write
+// access to ~/.ssh/authorized_keys (always true for the user themselves).
+func (d *Dialer) RotateKey(ctx context.Context, hostID int32) (BootstrapResult, error) {
+	client, host, err := d.ConnectToHost(ctx, hostID)
 	if err != nil {
-		return fmt.Errorf("open known_hosts: %w", err)
+		return BootstrapResult{}, fmt.Errorf("dial existing key: %w", err)
 	}
-	defer f.Close()
-	if _, err := f.WriteString(line + "\n"); err != nil {
-		return fmt.Errorf("write known_hosts: %w", err)
+	defer client.Close()
+
+	// Generate new keypair.
+	pubBytes, privKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return BootstrapResult{}, fmt.Errorf("generate keypair: %w", err)
+	}
+	sshPub, err := gossh.NewPublicKey(pubBytes)
+	if err != nil {
+		return BootstrapResult{}, fmt.Errorf("derive ssh public key: %w", err)
+	}
+	newAuthorizedKey := strings.TrimRight(string(gossh.MarshalAuthorizedKey(sshPub)), "\n")
+
+	pemBlock, err := gossh.MarshalPrivateKey(privKey, "ubuntu-auto-update")
+	if err != nil {
+		return BootstrapResult{}, fmt.Errorf("marshal private key: %w", err)
+	}
+	privPEM := string(pem.EncodeToMemory(pemBlock))
+
+	// Append new key, then verify a fresh dial works with it. Only after the
+	// verify dial succeeds do we strip *previous* uau-managed keys.
+	installScript := fmt.Sprintf(`set -e
+mkdir -p "$HOME/.ssh"
+chmod 700 "$HOME/.ssh"
+touch "$HOME/.ssh/authorized_keys"
+if ! grep -qxF %s "$HOME/.ssh/authorized_keys"; then
+  printf '%%s\n' %s >> "$HOME/.ssh/authorized_keys"
+fi
+chmod 600 "$HOME/.ssh/authorized_keys"
+`, shellQuote(newAuthorizedKey), shellQuote(newAuthorizedKey))
+
+	if out, err := runCommand(client, installScript, nil); err != nil {
+		return BootstrapResult{}, fmt.Errorf("install new key: %w (output: %s)", err, trimTo(out, 400))
+	}
+
+	// Verify with the new key.
+	signer, err := gossh.ParsePrivateKey([]byte(privPEM))
+	if err != nil {
+		return BootstrapResult{}, fmt.Errorf("parse new key: %w", err)
+	}
+	addr := host.Hostname
+	if !strings.Contains(addr, ":") {
+		addr += ":22"
+	}
+	hostKeyCB, err := d.hostKeyCallback()
+	if err != nil {
+		return BootstrapResult{}, fmt.Errorf("known_hosts: %w", err)
+	}
+	verifyCfg := &gossh.ClientConfig{
+		User:            host.SshUser,
+		Auth:            []gossh.AuthMethod{gossh.PublicKeys(signer)},
+		HostKeyCallback: hostKeyCB,
+		Timeout:         dialTimeout,
+	}
+	verifyCtx, verifyCancel := context.WithTimeout(ctx, dialTimeout)
+	defer verifyCancel()
+	verifyClient, err := dialContext(verifyCtx, addr, verifyCfg)
+	if err != nil {
+		return BootstrapResult{}, fmt.Errorf("verify new key: %w", err)
+	}
+	verifyClient.Close()
+
+	// Revoke any other ubuntu-auto-update-managed keys (we tag them via the
+	// MarshalPrivateKey comment "ubuntu-auto-update"). We keep the line whose
+	// public-key blob matches our newly installed key.
+	revokeScript := fmt.Sprintf(`set -e
+keep=%s
+tmp="$(mktemp)"
+awk -v keep="$keep" '
+  $0 == keep { print; next }
+  /ubuntu-auto-update/ { next }
+  { print }
+' "$HOME/.ssh/authorized_keys" > "$tmp"
+mv "$tmp" "$HOME/.ssh/authorized_keys"
+chmod 600 "$HOME/.ssh/authorized_keys"
+`, shellQuote(newAuthorizedKey))
+
+	if out, err := runCommand(client, revokeScript, nil); err != nil {
+		// Non-fatal: the new key works, the old one might still be there.
+		// The caller will see SudoConfigured=true but should log this output.
+		return BootstrapResult{
+			PrivateKeyPEM: privPEM,
+			AuthorizedKey: newAuthorizedKey,
+			SudoConfigured: true,
+			SudoScope:      "",
+		}, fmt.Errorf("rotate succeeded but failed to revoke old keys: %w (output: %s)", err, trimTo(out, 400))
+	}
+
+	return BootstrapResult{
+		PrivateKeyPEM:  privPEM,
+		AuthorizedKey:  newAuthorizedKey,
+		SudoConfigured: true,
+	}, nil
+}
+
+// AppendKnownHost records a host key. When HOST_KEY_STORE is "db" (the
+// production default with a Pool wired in) the key goes to the host_keys
+// table; otherwise it falls back to the legacy on-disk known_hosts file.
+//
+// Either way the cached host-key callback is invalidated so the next regular
+// SSH dial picks up the entry without a backend restart.
+func (d *Dialer) AppendKnownHost(hostname string, key gossh.PublicKey) error {
+	mode := os.Getenv("HOST_KEY_STORE")
+	if mode == "" {
+		if d.pool != nil {
+			mode = "db"
+		} else {
+			mode = "file"
+		}
+	}
+
+	switch mode {
+	case "db":
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := SaveHostKey(ctx, d.pool, hostname, key); err != nil {
+			return err
+		}
+	case "file":
+		path := os.Getenv("KNOWN_HOSTS_FILE")
+		if path == "" {
+			path = "known_hosts"
+		}
+		line := knownhosts.Line([]string{hostname}, key)
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+		if err != nil {
+			return fmt.Errorf("open known_hosts: %w", err)
+		}
+		defer f.Close()
+		if _, err := f.WriteString(line + "\n"); err != nil {
+			return fmt.Errorf("write known_hosts: %w", err)
+		}
+	default:
+		return fmt.Errorf("unknown HOST_KEY_STORE %q", mode)
 	}
 
 	d.invalidateHostKeyCache()

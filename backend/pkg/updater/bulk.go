@@ -32,12 +32,26 @@ const (
 	MaxConcurrency     = 20
 )
 
-// BulkRunOptions controls a fan-out update. Concurrency <= 0 means default;
-// values above MaxConcurrency are clamped.
+// BulkRunOptions controls a fan-out update.
+//
+// Concurrency <= 0 means default; values above MaxConcurrency are clamped.
+//
+// Staged-rollout knobs:
+//   - CanaryCount = 0 disables canarying; the whole fleet runs immediately
+//     under the regular concurrency limit.
+//   - CanaryCount > 0 reserves the first N hosts for an initial wave. After
+//     the wave finishes, the coordinator sleeps CanaryWaitSeconds, then
+//     either continues with the rest of the fleet (if no canary failed) or
+//     aborts the remainder.
+//   - AbortOnFailurePct: if a non-zero fraction of *completed* hosts has
+//     failed, mark every remaining host failed without dialing it. 0 disables.
 type BulkRunOptions struct {
-	HostIDs     []int32
-	Concurrency int
-	TriggeredBy string
+	HostIDs            []int32
+	Concurrency        int
+	TriggeredBy        string
+	CanaryCount        int
+	CanaryWaitSeconds  int
+	AbortOnFailurePct  int
 }
 
 // BulkResult is what we hand back to the API caller. RunIDs is parallel to
@@ -118,7 +132,10 @@ func (c *Coordinator) Start(ctx context.Context, opts BulkRunOptions) (BulkResul
 }
 
 // run is the long-lived goroutine that actually performs the fan-out. It
-// uses a weighted semaphore to keep concurrent SSH sessions bounded.
+// uses a weighted semaphore to keep concurrent SSH sessions bounded. When
+// CanaryCount > 0 the host list is split into two waves with a configurable
+// pause between them; an abort threshold can short-circuit the rest of the
+// fleet.
 func (c *Coordinator) run(opts BulkRunOptions, groupID string, runIDs []int32, conc int) {
 	defer func() {
 		c.mu.Lock()
@@ -126,21 +143,77 @@ func (c *Coordinator) run(opts BulkRunOptions, groupID string, runIDs []int32, c
 		c.mu.Unlock()
 	}()
 
-	// Use a fresh ctx so the work isn't tied to the originating HTTP request,
-	// which has long since returned. 30 minutes is a generous ceiling for
-	// even slow hosts running sizeable upgrades.
+	// Fresh ctx — work isn't tied to the originating HTTP request, which has
+	// long since returned. 30 min is generous for slow hosts.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
+	canary := opts.CanaryCount
+	if canary < 0 {
+		canary = 0
+	}
+	if canary > len(opts.HostIDs) {
+		canary = len(opts.HostIDs)
+	}
+
+	// Wave 1: canary (or everything when CanaryCount == 0).
+	end := canary
+	if end == 0 {
+		end = len(opts.HostIDs)
+	}
+	canaryFailures := c.runWave(ctx, opts.HostIDs[:end], runIDs[:end], conc)
+
+	// Stop early if the canary tripped the abort threshold.
+	if canary > 0 {
+		failPct := percent(canaryFailures, end)
+		if shouldAbort(opts.AbortOnFailurePct, failPct) {
+			log.Warnf("bulk %s: canary failed (%d/%d, %d%%) — aborting remainder",
+				groupID, canaryFailures, end, failPct)
+			c.skipRemaining(opts.HostIDs[end:], runIDs[end:],
+				fmt.Sprintf("canary failure rate %d%% exceeded threshold %d%%", failPct, opts.AbortOnFailurePct))
+			return
+		}
+
+		// Wait between waves. clamp to a reasonable ceiling so a typo can't
+		// pin a goroutine for hours.
+		if opts.CanaryWaitSeconds > 0 && end < len(opts.HostIDs) {
+			wait := time.Duration(opts.CanaryWaitSeconds) * time.Second
+			if wait > 10*time.Minute {
+				wait = 10 * time.Minute
+			}
+			log.Infof("bulk %s: canary OK, sleeping %s before remainder", groupID, wait)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(wait):
+			}
+		}
+	}
+
+	// Wave 2: the rest, only when canary > 0 and there's something left.
+	if canary > 0 && end < len(opts.HostIDs) {
+		_ = c.runWave(ctx, opts.HostIDs[end:], runIDs[end:], conc)
+	}
+}
+
+// runWave executes one slice of hosts under the concurrency cap and returns
+// the number of failed runs. The cap is applied within the wave so each wave
+// is independently bounded.
+func (c *Coordinator) runWave(ctx context.Context, hostIDs, runIDs []int32, conc int) int {
 	sem := semaphore.NewWeighted(int64(conc))
 	var wg sync.WaitGroup
+	var failures int64
+	var mu sync.Mutex
 
-	for i, hostID := range opts.HostIDs {
+	for i, hostID := range hostIDs {
 		hostID := hostID
 		runID := runIDs[i]
 
 		if err := sem.Acquire(ctx, 1); err != nil {
 			c.markFailed(runID, "bulk cancelled before start: "+err.Error())
+			mu.Lock()
+			failures++
+			mu.Unlock()
 			continue
 		}
 
@@ -148,15 +221,42 @@ func (c *Coordinator) run(opts BulkRunOptions, groupID string, runIDs []int32, c
 		go func() {
 			defer wg.Done()
 			defer sem.Release(1)
-			c.runOne(ctx, hostID, runID)
+			if !c.runOne(ctx, hostID, runID) {
+				mu.Lock()
+				failures++
+				mu.Unlock()
+			}
 		}()
 	}
 	wg.Wait()
+	return int(failures)
+}
+
+// skipRemaining marks every still-pending host failed without dialing it.
+// Used when the canary trips the abort threshold.
+func (c *Coordinator) skipRemaining(hostIDs, runIDs []int32, reason string) {
+	for i := range hostIDs {
+		c.markFailed(runIDs[i], "skipped: "+reason)
+	}
+}
+
+func percent(part, total int) int {
+	if total == 0 {
+		return 0
+	}
+	return (part * 100) / total
+}
+
+func shouldAbort(thresholdPct, observedPct int) bool {
+	if thresholdPct <= 0 || thresholdPct > 100 {
+		return false
+	}
+	return observedPct >= thresholdPct
 }
 
 // runOne performs a single host's update. Output is captured to the
-// pre-existing update_runs row identified by runID.
-func (c *Coordinator) runOne(ctx context.Context, hostID, runID int32) {
+// pre-existing update_runs row identified by runID. Returns true on success.
+func (c *Coordinator) runOne(ctx context.Context, hostID, runID int32) bool {
 	finishStatus := models.RunStatusFailed
 	finishExit := -1
 	finishErr := ""
@@ -175,7 +275,7 @@ func (c *Coordinator) runOne(ctx context.Context, hostID, runID int32) {
 	if err != nil {
 		finishErr = "ssh connect: " + err.Error()
 		_, _ = db.AppendRunOutput(ctx, c.Pool, runID, finishErr+"\n")
-		return
+		return false
 	}
 	defer client.Close()
 
@@ -183,26 +283,26 @@ func (c *Coordinator) runOne(ctx context.Context, hostID, runID int32) {
 	if err != nil {
 		finishErr = "ssh session: " + err.Error()
 		_, _ = db.AppendRunOutput(ctx, c.Pool, runID, finishErr+"\n")
-		return
+		return false
 	}
 	defer session.Close()
 
 	stdout, err := session.StdoutPipe()
 	if err != nil {
 		finishErr = "stdout pipe: " + err.Error()
-		return
+		return false
 	}
 	stderr, err := session.StderrPipe()
 	if err != nil {
 		finishErr = "stderr pipe: " + err.Error()
-		return
+		return false
 	}
 
 	cmd := buildUpdateScript(host.SshUser)
 	_, _ = db.AppendRunOutput(ctx, c.Pool, runID, "$ "+cmd+"\n")
 	if err := session.Start(cmd); err != nil {
 		finishErr = "start command: " + err.Error()
-		return
+		return false
 	}
 
 	var pumpWG sync.WaitGroup
@@ -215,14 +315,15 @@ func (c *Coordinator) runOne(ctx context.Context, hostID, runID int32) {
 	if err == nil {
 		finishStatus = models.RunStatusSucceeded
 		finishExit = 0
-		return
+		return true
 	}
 	if exitErr, ok := err.(*gossh.ExitError); ok {
 		finishExit = exitErr.ExitStatus()
 		finishErr = fmt.Sprintf("exit status %d", exitErr.ExitStatus())
-		return
+		return false
 	}
 	finishErr = err.Error()
+	return false
 }
 
 func (c *Coordinator) markFailed(runID int32, msg string) {

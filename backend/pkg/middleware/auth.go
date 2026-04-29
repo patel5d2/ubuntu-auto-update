@@ -12,34 +12,40 @@ import (
 	"time"
 
 	log "github.com/sirupsen/logrus"
+	"ubuntu-auto-update/backend/pkg/session"
 )
 
 type contextKey string
 
 const (
-	UserContextKey contextKey = "user"
+	UserContextKey      contextKey = "user"
+	PrincipalContextKey contextKey = "principal"
 )
 
+// User is the legacy actor representation surfaced via GetUserFromContext. New
+// code should reach for the richer Principal via GetPrincipalFromContext.
 type User struct {
 	ID       string
 	Username string
 	Role     string
 }
 
-// AuthConfig holds authentication configuration
 type AuthConfig struct {
 	CookieName   string
 	RequiredRole string
 }
 
-// NewAuthConfig creates auth config from environment
 func NewAuthConfig() *AuthConfig {
-	return &AuthConfig{
-		CookieName: "auth_token",
-	}
+	return &AuthConfig{CookieName: "auth_token"}
 }
 
-// TokenStore provides in-memory token storage with expiry
+// ---------------------------------------------------------------------------
+// Legacy in-memory token store. Retained because:
+//   - the existing main_test.go and middleware_test.go construct it directly,
+//   - it remains a valid choice for single-process dev environments.
+// New production code should use pkg/session.NewDBStore via SessionAuthMiddleware.
+// ---------------------------------------------------------------------------
+
 type TokenStore struct {
 	mu     sync.RWMutex
 	tokens map[string]TokenEntry
@@ -47,50 +53,47 @@ type TokenStore struct {
 
 type TokenEntry struct {
 	Username  string
+	Role      string
 	ExpiresAt time.Time
 }
 
-var globalTokenStore = &TokenStore{
-	tokens: make(map[string]TokenEntry),
-}
+var globalTokenStore = &TokenStore{tokens: make(map[string]TokenEntry)}
 
-// GetTokenStore returns the global token store
-func GetTokenStore() *TokenStore {
-	return globalTokenStore
-}
+func GetTokenStore() *TokenStore { return globalTokenStore }
 
-// StoreToken adds a token to the store
+// StoreToken adds an admin-role token. Kept for backwards compatibility with
+// callers that don't yet supply a role.
 func (ts *TokenStore) StoreToken(token, username string, expiry time.Duration) {
+	ts.StoreTokenWithRole(token, username, "admin", expiry)
+}
+
+// StoreTokenWithRole is the role-aware variant; new code should prefer this.
+func (ts *TokenStore) StoreTokenWithRole(token, username, role string, expiry time.Duration) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 	ts.tokens[token] = TokenEntry{
 		Username:  username,
+		Role:      role,
 		ExpiresAt: time.Now().Add(expiry),
 	}
 }
 
-// ValidateToken checks if a token is valid and not expired
 func (ts *TokenStore) ValidateToken(token string) (string, bool) {
 	ts.mu.RLock()
 	defer ts.mu.RUnlock()
 	entry, exists := ts.tokens[token]
-	if !exists {
-		return "", false
-	}
-	if time.Now().After(entry.ExpiresAt) {
+	if !exists || time.Now().After(entry.ExpiresAt) {
 		return "", false
 	}
 	return entry.Username, true
 }
 
-// RemoveToken removes a token from the store
 func (ts *TokenStore) RemoveToken(token string) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 	delete(ts.tokens, token)
 }
 
-// CleanExpiredTokens removes all expired tokens
 func (ts *TokenStore) CleanExpiredTokens() {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
@@ -102,7 +105,8 @@ func (ts *TokenStore) CleanExpiredTokens() {
 	}
 }
 
-// GenerateSecureToken creates a cryptographically random token
+// GenerateSecureToken — kept for callers that still need a raw token
+// independent of session storage (e.g. legacy enrollment).
 func GenerateSecureToken() (string, error) {
 	bytes := make([]byte, 32)
 	if _, err := rand.Read(bytes); err != nil {
@@ -111,25 +115,26 @@ func GenerateSecureToken() (string, error) {
 	return hex.EncodeToString(bytes), nil
 }
 
-// SetAuthCookie sets authentication cookie with secure defaults
+// ---------------------------------------------------------------------------
+// Cookie helpers, principal context, RBAC.
+// ---------------------------------------------------------------------------
+
 func SetAuthCookie(w http.ResponseWriter, config *AuthConfig, tokenString string) {
 	isProduction := os.Getenv("ENVIRONMENT") == "production"
-	cookie := &http.Cookie{
+	http.SetCookie(w, &http.Cookie{
 		Name:     config.CookieName,
 		Value:    tokenString,
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   isProduction,
 		SameSite: http.SameSiteLaxMode,
-		MaxAge:   86400, // 24 hours
-	}
-	http.SetCookie(w, cookie)
+		MaxAge:   86400,
+	})
 }
 
-// ClearAuthCookie clears authentication cookie
 func ClearAuthCookie(w http.ResponseWriter, config *AuthConfig) {
 	isProduction := os.Getenv("ENVIRONMENT") == "production"
-	cookie := &http.Cookie{
+	http.SetCookie(w, &http.Cookie{
 		Name:     config.CookieName,
 		Value:    "",
 		Path:     "/",
@@ -137,11 +142,9 @@ func ClearAuthCookie(w http.ResponseWriter, config *AuthConfig) {
 		Secure:   isProduction,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
-	}
-	http.SetCookie(w, cookie)
+	})
 }
 
-// GetUserFromContext extracts user from request context
 func GetUserFromContext(r *http.Request) *User {
 	if user, ok := r.Context().Value(UserContextKey).(*User); ok {
 		return user
@@ -149,77 +152,154 @@ func GetUserFromContext(r *http.Request) *User {
 	return nil
 }
 
-// RoleMiddleware checks for specific role
-func RoleMiddleware(requiredRole string) func(http.Handler) http.Handler {
+// GetPrincipalFromContext returns the rich Principal for handlers that need
+// role/agent details. Returns nil if no principal was attached (i.e. the
+// route is not behind auth middleware).
+func GetPrincipalFromContext(r *http.Request) *session.Principal {
+	if p, ok := r.Context().Value(PrincipalContextKey).(*session.Principal); ok {
+		return p
+	}
+	return nil
+}
+
+// RequireRole gates a handler on a minimum role. Admin always passes. Used as
+// `r.Use(middleware.RequireRole(session.RoleOperator))` on a subrouter.
+func RequireRole(required string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			user := GetUserFromContext(r)
-			if user == nil {
-				SendAuthError(w, "User context not found")
+			p := GetPrincipalFromContext(r)
+			if p == nil {
+				SendAuthError(w, "No authenticated principal")
 				return
 			}
-
-			// Admin role bypasses all role checks
-			if user.Role != "admin" && user.Role != requiredRole {
-				SendForbiddenError(w, fmt.Sprintf("Role %s required", requiredRole))
+			if !p.HasRole(required) {
+				SendForbiddenError(w, fmt.Sprintf("Role '%s' required", required))
 				return
 			}
-
 			next.ServeHTTP(w, r)
 		})
 	}
 }
 
-// TokenAuthMiddleware validates tokens from the token store
+// RoleMiddleware is the legacy variant kept for compatibility. Delegates to
+// the principal-aware path when one is available, otherwise falls back to the
+// User context.
+func RoleMiddleware(requiredRole string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if p := GetPrincipalFromContext(r); p != nil {
+				if !p.HasRole(requiredRole) {
+					SendForbiddenError(w, fmt.Sprintf("Role %s required", requiredRole))
+					return
+				}
+				next.ServeHTTP(w, r)
+				return
+			}
+			user := GetUserFromContext(r)
+			if user == nil {
+				SendAuthError(w, "User context not found")
+				return
+			}
+			if user.Role != "admin" && user.Role != requiredRole {
+				SendForbiddenError(w, fmt.Sprintf("Role %s required", requiredRole))
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Auth middlewares.
+// ---------------------------------------------------------------------------
+
+// extractToken pulls a token out of either the auth cookie or an
+// Authorization: Bearer header. Returns "" if neither is present.
+func extractToken(r *http.Request, cookieName string) string {
+	if cookie, err := r.Cookie(cookieName); err == nil && cookie.Value != "" {
+		return cookie.Value
+	}
+	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
+		return strings.TrimPrefix(h, "Bearer ")
+	}
+	return ""
+}
+
+// TokenAuthMiddleware validates against the legacy TokenStore. Preserved for
+// tests and dev. New deployments should use SessionAuthMiddleware.
 func TokenAuthMiddleware(store *TokenStore, config *AuthConfig) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			var tokenString string
-
-			// Try to get token from cookie first (for web UI)
-			if cookie, err := r.Cookie(config.CookieName); err == nil {
-				tokenString = cookie.Value
-			}
-
-			// If no cookie, try Authorization header (for API clients / agents)
-			if tokenString == "" {
-				authHeader := r.Header.Get("Authorization")
-				if strings.HasPrefix(authHeader, "Bearer ") {
-					tokenString = strings.TrimPrefix(authHeader, "Bearer ")
-				}
-			}
-
-			if tokenString == "" {
+			tok := extractToken(r, config.CookieName)
+			if tok == "" {
 				SendAuthError(w, "No authentication token provided")
 				return
 			}
 
-			// Validate token
-			username, valid := store.ValidateToken(tokenString)
+			username, valid := store.ValidateToken(tok)
 			if !valid {
 				SendAuthError(w, "Invalid or expired authentication token")
 				return
 			}
 
-			// Add user to request context
-			user := &User{
-				Username: username,
-				Role:     "admin", // For now, all authenticated users are admin
-			}
+			user := &User{Username: username, Role: "admin"}
 			ctx := context.WithValue(r.Context(), UserContextKey, user)
+
+			// Also attach a Principal so downstream handlers using the new API
+			// see something sensible. The role is read from the in-memory entry.
+			store.mu.RLock()
+			role := "admin"
+			if entry, ok := store.tokens[tok]; ok && entry.Role != "" {
+				role = entry.Role
+			}
+			store.mu.RUnlock()
+			p := &session.Principal{Username: username, Role: role}
+			ctx = context.WithValue(ctx, PrincipalContextKey, p)
+
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
 
-// StartTokenCleanup starts a background goroutine that cleans expired tokens
+// SessionAuthMiddleware validates against a pkg/session.Store. This is the
+// production path: it gives us shared state across replicas, agent vs. user
+// distinction, and richer principal data (role, user id, session id).
+func SessionAuthMiddleware(store session.Store, config *AuthConfig) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			tok := extractToken(r, config.CookieName)
+			if tok == "" {
+				SendAuthError(w, "No authentication token provided")
+				return
+			}
+			p, ok, err := store.Validate(r.Context(), tok)
+			if err != nil {
+				log.Errorf("session validate: %v", err)
+				SendAuthError(w, "Authentication temporarily unavailable")
+				return
+			}
+			if !ok {
+				SendAuthError(w, "Invalid or expired authentication token")
+				return
+			}
+
+			ctx := context.WithValue(r.Context(), PrincipalContextKey, &p)
+			// Legacy compatibility for handlers still reading User.
+			user := &User{Username: p.Username, Role: p.Role}
+			ctx = context.WithValue(ctx, UserContextKey, user)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+// StartTokenCleanup is the legacy ticker for the in-memory store. Production
+// code uses session.StartCleanup with a session.Store.
 func StartTokenCleanup(store *TokenStore, interval time.Duration) {
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for range ticker.C {
 			store.CleanExpiredTokens()
-			log.Debug("Expired tokens cleaned up")
 		}
 	}()
 }

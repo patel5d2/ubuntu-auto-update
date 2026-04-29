@@ -24,13 +24,17 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/crypto/ssh"
+
+	"ubuntu-auto-update/backend/pkg/audit"
 	"ubuntu-auto-update/backend/pkg/config"
 	"ubuntu-auto-update/backend/pkg/db"
 	"ubuntu-auto-update/backend/pkg/events"
 	"ubuntu-auto-update/backend/pkg/middleware"
 	"ubuntu-auto-update/backend/pkg/models"
+	"ubuntu-auto-update/backend/pkg/session"
 	sshpkg "ubuntu-auto-update/backend/pkg/ssh"
 	"ubuntu-auto-update/backend/pkg/updater"
+	"ubuntu-auto-update/backend/pkg/users"
 	"ubuntu-auto-update/backend/pkg/webhook"
 )
 
@@ -39,9 +43,12 @@ const maxRequestBodySize = 1 << 20
 
 type Application struct {
 	DB             *pgxpool.Pool
-	TokenStore     *middleware.TokenStore
+	TokenStore     *middleware.TokenStore // legacy in-memory store (tests + dev)
+	Sessions       session.Store          // production session store (DB-backed when DB available)
 	AuthConfig     *middleware.AuthConfig
 	CORS           *middleware.CORSConfig
+	IPAllowlist    *middleware.IPAllowlist
+	LoginLimiter   *middleware.LoginRateLimiter
 	SSHDialer      *sshpkg.Dialer
 	WebhookSender  *webhook.Dispatcher
 	BulkUpdater    *updater.Coordinator
@@ -105,20 +112,45 @@ func main() {
 	authConfig := middleware.NewAuthConfig()
 	middleware.StartTokenCleanup(tokenStore, 5*time.Minute)
 
-	corsCfg := middleware.LoadCORSConfig()
-	dispatcher := webhook.NewDispatcher()
+	// DB-backed session store. The legacy in-memory store remains alive
+	// only so that tests in this package can keep using it directly.
+	sessionStore := session.NewDBStore(dbPool)
+	cleanupCtx, cancelSessionCleanup := context.WithCancel(context.Background())
+	defer cancelSessionCleanup()
+	session.StartCleanup(cleanupCtx, sessionStore, 5*time.Minute)
 
+	corsCfg := middleware.LoadCORSConfig()
+	allowlist, err := middleware.NewIPAllowlist(os.Getenv("OPERATOR_IP_ALLOWLIST"))
+	if err != nil {
+		log.Fatalf("OPERATOR_IP_ALLOWLIST: %v", err)
+	}
+	loginLimiter := middleware.NewLoginRateLimiter()
+
+	dispatcher := webhook.NewDispatcher()
 	sshDialer := sshpkg.NewDialer(dbPool)
 	broker := events.NewBroker()
 	app := &Application{
 		DB:            dbPool,
 		TokenStore:    tokenStore,
+		Sessions:      sessionStore,
 		AuthConfig:    authConfig,
 		CORS:          corsCfg,
+		IPAllowlist:   allowlist,
+		LoginLimiter:  loginLimiter,
 		SSHDialer:     sshDialer,
 		WebhookSender: dispatcher,
 		BulkUpdater:   updater.New(dbPool, sshDialer),
 		EventBroker:   broker,
+	}
+
+	// Bootstrap an initial admin from ADMIN_USERNAME / ADMIN_PASSWORD env
+	// vars. Only takes effect when the users table is empty, so re-deploys
+	// don't quietly clobber a manually-created account.
+	if created, err := users.EnsureBootstrapAdmin(ctx, dbPool,
+		os.Getenv("ADMIN_USERNAME"), os.Getenv("ADMIN_PASSWORD")); err != nil {
+		log.Errorf("bootstrap admin: %v", err)
+	} else if created {
+		log.Infof("Bootstrapped initial admin user from ADMIN_USERNAME / ADMIN_PASSWORD")
 	}
 
 	// Start the LISTEN/NOTIFY pump. Lifetime is tied to listenerCtx so the
@@ -131,35 +163,64 @@ func main() {
 	r := mux.NewRouter()
 	r.Use(middleware.ErrorHandler) // panic recovery + request logging
 	r.Use(middleware.CORS(corsCfg))
+	if allowlist != nil {
+		r.Use(middleware.IPAllowlistMiddleware(allowlist))
+	}
 
 	r.HandleFunc("/api/v1/health", app.handleHealth).Methods(http.MethodGet)
 	r.HandleFunc("/api/v1/enroll", app.handleEnroll).Methods(http.MethodPost)
 	r.HandleFunc("/api/v1/login", app.handleLogin).Methods(http.MethodPost, http.MethodOptions)
 	r.HandleFunc("/api/v1/logout", app.handleLogout).Methods(http.MethodPost, http.MethodOptions)
 
+	// Authenticated routes (any role).
 	api := r.PathPrefix("/api/v1").Subrouter()
-	api.Use(middleware.TokenAuthMiddleware(tokenStore, authConfig))
+	api.Use(middleware.SessionAuthMiddleware(sessionStore, authConfig))
+
+	// /report is agent-only; we let the SessionAuthMiddleware accept it
+	// (agent tokens carry RoleAgent) and the handler asserts further.
 	api.HandleFunc("/report", app.handleReport).Methods(http.MethodPost)
-	api.HandleFunc("/hosts", app.handleListHosts).Methods(http.MethodGet)
-	api.HandleFunc("/hosts", app.handleCreateHost).Methods(http.MethodPost)
-	api.HandleFunc("/hosts/{id}", app.handleGetHost).Methods(http.MethodGet)
-	api.HandleFunc("/hosts/{id}", app.handleUpdateHost).Methods(http.MethodPatch)
-	api.HandleFunc("/hosts/{id}", app.handleDeleteHost).Methods(http.MethodDelete)
-	// WebSocket handshakes are GET-only; be explicit so the routes don't accept other verbs.
-	api.HandleFunc("/hosts/{id}/preview-updates", app.handlePreviewUpdates).Methods(http.MethodGet)
-	api.HandleFunc("/hosts/{id}/run-update", app.handleRunUpdate).Methods(http.MethodGet)
-	api.HandleFunc("/hosts/{id}/execute-script", app.handleExecuteScript).Methods(http.MethodGet)
-	api.HandleFunc("/hosts/{id}/ssh-key", app.handleAddSSHKey).Methods(http.MethodPost)
-	api.HandleFunc("/hosts/{id}/test-connection", app.handleTestConnection).Methods(http.MethodPost)
-	api.HandleFunc("/hosts/{id}/auto-configure", app.handleAutoConfigure).Methods(http.MethodPost)
-	api.HandleFunc("/hosts/bulk/run-update", app.handleBulkRunUpdate).Methods(http.MethodPost)
-	api.HandleFunc("/hosts/{id}/runs", app.handleListRuns).Methods(http.MethodGet)
-	api.HandleFunc("/runs", app.handleListRunsByGroup).Methods(http.MethodGet)
-	api.HandleFunc("/runs/{id}", app.handleGetRun).Methods(http.MethodGet)
-	// /events is the multiplexed real-time channel — one WS per browser tab,
-	// every state change in hosts/update_runs lands here as {table, op, id}.
-	api.HandleFunc("/events", events.Handler(broker, app.wsUpgrader())).Methods(http.MethodGet)
-	api.HandleFunc("/webhooks", app.handleAddWebhook).Methods(http.MethodPost)
+
+	// Read-only — viewer+ can see.
+	viewer := api.PathPrefix("").Subrouter()
+	viewer.Use(middleware.RequireRole(session.RoleViewer))
+	viewer.HandleFunc("/hosts", app.handleListHosts).Methods(http.MethodGet)
+	viewer.HandleFunc("/hosts/{id}", app.handleGetHost).Methods(http.MethodGet)
+	viewer.HandleFunc("/hosts/{id}/runs", app.handleListRuns).Methods(http.MethodGet)
+	viewer.HandleFunc("/runs", app.handleListRunsByGroup).Methods(http.MethodGet)
+	viewer.HandleFunc("/runs/{id}", app.handleGetRun).Methods(http.MethodGet)
+	viewer.HandleFunc("/events", events.Handler(broker, app.wsUpgrader())).Methods(http.MethodGet)
+	viewer.HandleFunc("/me", app.handleMe).Methods(http.MethodGet)
+
+	// State-changing operations — operator+.
+	op := api.PathPrefix("").Subrouter()
+	op.Use(middleware.RequireRole(session.RoleOperator))
+	// CSRF defense for cookie-auth POSTs/PATCHes/DELETEs. Bearer-auth bypasses.
+	// Disable with CSRF_DISABLED=true if you need to (e.g. CLI-only deployment).
+	if os.Getenv("CSRF_DISABLED") != "true" {
+		op.Use(middleware.CSRFMiddleware(authConfig.CookieName))
+	}
+	op.HandleFunc("/hosts", app.handleCreateHost).Methods(http.MethodPost)
+	op.HandleFunc("/hosts/{id}", app.handleUpdateHost).Methods(http.MethodPatch)
+	op.HandleFunc("/hosts/{id}", app.handleDeleteHost).Methods(http.MethodDelete)
+	op.HandleFunc("/hosts/{id}/preview-updates", app.handlePreviewUpdates).Methods(http.MethodGet)
+	op.HandleFunc("/hosts/{id}/run-update", app.handleRunUpdate).Methods(http.MethodGet)
+	op.HandleFunc("/hosts/{id}/execute-script", app.handleExecuteScript).Methods(http.MethodGet)
+	op.HandleFunc("/hosts/{id}/ssh-key", app.handleAddSSHKey).Methods(http.MethodPost)
+	op.HandleFunc("/hosts/{id}/test-connection", app.handleTestConnection).Methods(http.MethodPost)
+	op.HandleFunc("/hosts/{id}/auto-configure", app.handleAutoConfigure).Methods(http.MethodPost)
+	op.HandleFunc("/hosts/{id}/rotate-key", app.handleRotateKey).Methods(http.MethodPost)
+	op.HandleFunc("/hosts/bulk/enroll", app.handleBulkEnroll).Methods(http.MethodPost)
+	op.HandleFunc("/hosts/bulk/run-update", app.handleBulkRunUpdate).Methods(http.MethodPost)
+	op.HandleFunc("/webhooks", app.handleAddWebhook).Methods(http.MethodPost)
+
+	// Admin-only — user/audit management.
+	admin := api.PathPrefix("").Subrouter()
+	admin.Use(middleware.RequireRole(session.RoleAdmin))
+	admin.HandleFunc("/users", app.handleListUsers).Methods(http.MethodGet)
+	admin.HandleFunc("/users", app.handleCreateUser).Methods(http.MethodPost)
+	admin.HandleFunc("/users/{id}", app.handleUpdateUser).Methods(http.MethodPatch)
+	admin.HandleFunc("/users/{id}", app.handleDeleteUser).Methods(http.MethodDelete)
+	admin.HandleFunc("/audit", app.handleListAudit).Methods(http.MethodGet)
 
 	// Fallback to serving the frontend React application
 	spa := spaHandler{staticPath: "public", indexPath: "index.html"}
@@ -234,15 +295,32 @@ func (app *Application) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	authToken, err := middleware.GenerateSecureToken()
-	if err != nil {
-		log.Errorf("Failed to generate token: %v", err)
-		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
-		return
+	// Use the session store when available (production path); fall back to
+	// the legacy in-memory store when DB isn't wired (tests).
+	var authToken string
+	if app.Sessions != nil {
+		t, err := app.Sessions.Create(r.Context(),
+			session.Principal{AgentLabel: req.Hostname, Username: "agent:" + req.Hostname, Role: session.RoleAgent},
+			365*24*time.Hour, middleware.ClientIP(r), r.UserAgent())
+		if err != nil {
+			log.Errorf("Failed to create agent session: %v", err)
+			http.Error(w, "Failed to generate token", http.StatusInternalServerError)
+			return
+		}
+		authToken = t
+	} else {
+		t, err := middleware.GenerateSecureToken()
+		if err != nil {
+			http.Error(w, "Failed to generate token", http.StatusInternalServerError)
+			return
+		}
+		authToken = t
+		app.TokenStore.StoreTokenWithRole(authToken, "agent:"+req.Hostname, session.RoleAgent, 365*24*time.Hour)
 	}
 
-	app.TokenStore.StoreToken(authToken, "agent:"+req.Hostname, 365*24*time.Hour)
 	log.Infof("Agent enrolled successfully: %s", req.Hostname)
+	app.audit(r, audit.ActionAgentEnroll, "agent", req.Hostname,
+		map[string]interface{}{"hostname": req.Hostname})
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"token": authToken})
@@ -251,12 +329,54 @@ func (app *Application) handleEnroll(w http.ResponseWriter, r *http.Request) {
 func (app *Application) handleLogin(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 
+	// Per-IP rate limit. Cheap and effective at slowing brute-force attempts
+	// without affecting legitimate users.
+	if app.LoginLimiter != nil {
+		if !app.LoginLimiter.Allow(middleware.ClientIP(r)) {
+			w.Header().Set("Retry-After", "60")
+			writeJSONError(w, http.StatusTooManyRequests, "Too many login attempts; try again shortly")
+			return
+		}
+	}
+
 	var req LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
+	// Path A: DB-backed users (production). Falls through to env-based admin
+	// only when the DB path isn't available (tests with no DB).
+	if app.DB != nil {
+		u, err := users.Authenticate(r.Context(), app.DB, req.Username, req.Password)
+		if err != nil {
+			// Log a single audit entry and return a generic 401.
+			app.audit(r, audit.ActionLoginFailure, "user", req.Username,
+				map[string]interface{}{"reason": err.Error()})
+			writeJSONError(w, http.StatusUnauthorized, "Invalid credentials")
+			return
+		}
+
+		tok, err := app.Sessions.Create(r.Context(),
+			session.Principal{UserID: u.ID, Username: u.Username, Role: u.Role},
+			24*time.Hour, middleware.ClientIP(r), r.UserAgent())
+		if err != nil {
+			log.Errorf("create session: %v", err)
+			writeJSONError(w, http.StatusInternalServerError, "Failed to create session")
+			return
+		}
+		middleware.SetAuthCookie(w, app.AuthConfig, tok)
+		app.audit(r, audit.ActionLoginSuccess, "user", strconv.FormatInt(int64(u.ID), 10),
+			map[string]interface{}{"username": u.Username})
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"token": tok, "role": u.Role})
+		return
+	}
+
+	// Path B: legacy env-based admin login (preserved for the existing test
+	// suite; production should never reach this branch).
 	adminUsername := os.Getenv("ADMIN_USERNAME")
 	adminPassword := os.Getenv("ADMIN_PASSWORD")
 	if adminUsername == "" || adminPassword == "" {
@@ -264,27 +384,39 @@ func (app *Application) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "Authentication not configured on server")
 		return
 	}
-
 	userOK := subtle.ConstantTimeCompare([]byte(req.Username), []byte(adminUsername)) == 1
 	passOK := subtle.ConstantTimeCompare([]byte(req.Password), []byte(adminPassword)) == 1
 	if !userOK || !passOK {
 		writeJSONError(w, http.StatusUnauthorized, "Invalid credentials")
 		return
 	}
-
 	authToken, err := middleware.GenerateSecureToken()
 	if err != nil {
 		log.Errorf("Failed to generate token: %v", err)
 		writeJSONError(w, http.StatusInternalServerError, "Failed to generate token")
 		return
 	}
-
-	app.TokenStore.StoreToken(authToken, req.Username, 24*time.Hour)
+	app.TokenStore.StoreTokenWithRole(authToken, req.Username, session.RoleAdmin, 24*time.Hour)
 	middleware.SetAuthCookie(w, app.AuthConfig, authToken)
-
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"token": authToken})
+}
+
+// handleMe returns the current principal so the UI can branch on role
+// without a separate config endpoint.
+func (app *Application) handleMe(w http.ResponseWriter, r *http.Request) {
+	p := middleware.GetPrincipalFromContext(r)
+	if p == nil {
+		writeJSONError(w, http.StatusUnauthorized, "No principal")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"username": p.Username,
+		"role":     p.Role,
+		"is_agent": p.IsAgent(),
+	})
 }
 
 func writeJSONError(w http.ResponseWriter, status int, message string) {
@@ -295,12 +427,22 @@ func writeJSONError(w http.ResponseWriter, status int, message string) {
 
 // handleLogout invalidates the caller's token (if present) and clears the auth cookie.
 func (app *Application) handleLogout(w http.ResponseWriter, r *http.Request) {
+	tok := ""
 	if cookie, err := r.Cookie(app.AuthConfig.CookieName); err == nil && cookie.Value != "" {
-		app.TokenStore.RemoveToken(cookie.Value)
+		tok = cookie.Value
 	} else if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
-		app.TokenStore.RemoveToken(strings.TrimPrefix(h, "Bearer "))
+		tok = strings.TrimPrefix(h, "Bearer ")
+	}
+	if tok != "" {
+		if app.Sessions != nil {
+			_ = app.Sessions.Revoke(r.Context(), tok)
+		}
+		// Always remove from the legacy in-memory store too — harmless if
+		// missing.
+		app.TokenStore.RemoveToken(tok)
 	}
 	middleware.ClearAuthCookie(w, app.AuthConfig)
+	app.audit(r, audit.ActionLogout, "session", "", nil)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -427,6 +569,8 @@ func (app *Application) handleCreateHost(w http.ResponseWriter, r *http.Request)
 	// later via the SSH tab.
 	if req.Password == "" {
 		log.Infof("Operator created host: %s (ID: %d)", host.Hostname, host.ID)
+		app.audit(r, audit.ActionHostCreate, "host", strconv.FormatInt(int64(host.ID), 10),
+			map[string]interface{}{"hostname": host.Hostname, "ssh_user": host.SshUser})
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(host)
@@ -466,6 +610,13 @@ func (app *Application) handleCreateHost(w http.ResponseWriter, r *http.Request)
 	}
 
 	log.Infof("Auto-enrolled host: %s (ID: %d, sudo=%v)", host.Hostname, host.ID, result.SudoConfigured)
+	app.audit(r, audit.ActionHostBootstrap, "host", strconv.FormatInt(int64(host.ID), 10),
+		map[string]interface{}{
+			"hostname":    host.Hostname,
+			"ssh_user":    host.SshUser,
+			"fingerprint": result.HostKeyFingerprint,
+			"sudo_scope":  result.SudoScope,
+		})
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(host)
@@ -554,6 +705,8 @@ func (app *Application) handleDeleteHost(w http.ResponseWriter, r *http.Request)
 	}
 
 	log.Infof("Deleted host: %s (ID: %d)", host.Hostname, id)
+	app.audit(r, audit.ActionHostDelete, "host", strconv.FormatInt(int64(id), 10),
+		map[string]interface{}{"hostname": host.Hostname})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1065,8 +1218,11 @@ func (app *Application) handleBulkRunUpdate(w http.ResponseWriter, r *http.Reque
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 
 	var req struct {
-		HostIDs     []int32 `json:"host_ids"`
-		Concurrency int     `json:"concurrency,omitempty"`
+		HostIDs            []int32 `json:"host_ids"`
+		Concurrency        int     `json:"concurrency,omitempty"`
+		CanaryCount        int     `json:"canary_count,omitempty"`
+		CanaryWaitSeconds  int     `json:"canary_wait_seconds,omitempty"`
+		AbortOnFailurePct  int     `json:"abort_on_failure_pct,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "Invalid request body")
@@ -1095,9 +1251,12 @@ func (app *Application) handleBulkRunUpdate(w http.ResponseWriter, r *http.Reque
 	}
 
 	result, err := app.BulkUpdater.Start(r.Context(), updater.BulkRunOptions{
-		HostIDs:     req.HostIDs,
-		Concurrency: req.Concurrency,
-		TriggeredBy: triggeredBy,
+		HostIDs:            req.HostIDs,
+		Concurrency:        req.Concurrency,
+		TriggeredBy:        triggeredBy,
+		CanaryCount:        req.CanaryCount,
+		CanaryWaitSeconds:  req.CanaryWaitSeconds,
+		AbortOnFailurePct:  req.AbortOnFailurePct,
 	})
 	if err != nil {
 		log.Errorf("bulk update start failed: %v", err)
@@ -1106,6 +1265,13 @@ func (app *Application) handleBulkRunUpdate(w http.ResponseWriter, r *http.Reque
 	}
 
 	log.Infof("Bulk update %s triggered by %s across %d hosts", result.GroupID, triggeredBy, len(req.HostIDs))
+	app.audit(r, audit.ActionRunBulkUpdate, "run_group", result.GroupID,
+		map[string]interface{}{
+			"host_count":         len(req.HostIDs),
+			"canary_count":       req.CanaryCount,
+			"canary_wait_seconds": req.CanaryWaitSeconds,
+			"abort_on_failure_pct": req.AbortOnFailurePct,
+		})
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(result)
