@@ -266,28 +266,29 @@ build_docker_images() {
     local datestamp
     datestamp="$(date +%Y%m%d)"
 
+    # The project uses a single "dark container" (root Dockerfile) that bakes
+    # the React frontend + Go backend into one image.  Per-component images
+    # (agent/backend/frontend) are not published; only this unified image is.
+    if [[ -f "$ROOT_DIR/Dockerfile" ]]; then
+        log "Building dark container image (unified backend + frontend)..."
+        docker build \
+            -t "ghcr.io/patel5d2/ubuntu-auto-update:latest" \
+            -t "ghcr.io/patel5d2/ubuntu-auto-update:$datestamp" \
+            "$ROOT_DIR"
+        log_success "Dark container image built"
+    else
+        log_error "Root Dockerfile not found at $ROOT_DIR/Dockerfile"
+        exit 1
+    fi
+
+    # The Rust agent has its own standalone image (used by docker-compose.dev.yml).
     if [[ "$BUILD_AGENT" == "true" && -f "$ROOT_DIR/agent/Dockerfile" ]]; then
         log "Building agent Docker image..."
-        docker build -t "ubuntu-auto-update/agent:latest" \
-                     -t "ubuntu-auto-update/agent:$datestamp" \
-                     "$ROOT_DIR/agent"
+        docker build \
+            -t "ghcr.io/patel5d2/ubuntu-auto-update/agent:latest" \
+            -t "ghcr.io/patel5d2/ubuntu-auto-update/agent:$datestamp" \
+            "$ROOT_DIR/agent"
         log_success "Agent Docker image built"
-    fi
-
-    if [[ "$BUILD_BACKEND" == "true" && -f "$ROOT_DIR/backend/Dockerfile" ]]; then
-        log "Building backend Docker image..."
-        docker build -t "ubuntu-auto-update/backend:latest" \
-                     -t "ubuntu-auto-update/backend:$datestamp" \
-                     "$ROOT_DIR/backend"
-        log_success "Backend Docker image built"
-    fi
-
-    if [[ "$BUILD_FRONTEND" == "true" && -f "$ROOT_DIR/web/Dockerfile" ]]; then
-        log "Building frontend Docker image..."
-        docker build -t "ubuntu-auto-update/frontend:latest" \
-                     -t "ubuntu-auto-update/frontend:$datestamp" \
-                     "$ROOT_DIR/web"
-        log_success "Frontend Docker image built"
     fi
 }
 

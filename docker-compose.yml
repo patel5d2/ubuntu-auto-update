@@ -1,14 +1,14 @@
-# Production-ish compose for the README quickstart.
+# Production compose — single "dark container" that serves both the React
+# frontend (as embedded static assets) and the Go API.
 #
-#   cp .env.example .env       # edit secrets
+#   cp .env.example .env       # fill in secrets
 #   docker compose up -d
 #
-#   Web UI:  http://localhost:5173
-#   API:     http://localhost:8080/api/v1/health
+#   Web UI + API:  http://localhost:8080
+#   Health check:  http://localhost:8080/api/v1/health
 #
-# The frontend container is an Nginx serving the prebuilt React bundle and
-# reverse-proxying /api/ → backend. Browser hits a single origin (5173) so
-# CORS only needs to allow that one origin.
+# The root Dockerfile builds one image: React bundle is copied into /app/public
+# and the Go backend serves it from that path.  No separate nginx container needed.
 
 services:
   postgres:
@@ -26,8 +26,10 @@ services:
       timeout: 3s
       retries: 10
 
-  backend:
-    build: ./backend
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -41,24 +43,18 @@ services:
       ENROLLMENT_TOKEN: ${ENROLLMENT_TOKEN:?ENROLLMENT_TOKEN must be set in .env}
       API_PORT: 8080
       ENVIRONMENT: ${ENVIRONMENT:-development}
-      # The browser only ever sees the frontend origin (it talks to nginx,
-      # which proxies to backend). Allow that origin only.
-      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173}
+      # CORS: same-origin requests from the browser never need CORS headers,
+      # but agent enrollments come from external IPs so keep this configurable.
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+    volumes:
+      - app_keys:/app/encryption.key
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/api/v1/health"]
       interval: 10s
       timeout: 5s
       retries: 6
-      start_period: 10s
-
-  frontend:
-    build: ./web
-    restart: unless-stopped
-    ports:
-      - "5173:80"
-    depends_on:
-      backend:
-        condition: service_healthy
+      start_period: 15s
 
 volumes:
   postgres_data:
+  app_keys:

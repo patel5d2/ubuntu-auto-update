@@ -17,7 +17,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/ua-back
 # Stage 2: download golang-migrate to a known location.
 FROM alpine:3.20 AS migrate
 ARG MIGRATE_VERSION=v4.18.1
-ARG TARGETARCH=amd64
+# TARGETARCH is injected automatically by BuildKit (amd64 / arm64).
+ARG TARGETARCH
 RUN apk add --no-cache curl ca-certificates && \
     curl -fsSL "https://github.com/golang-migrate/migrate/releases/download/${MIGRATE_VERSION}/migrate.linux-${TARGETARCH}.tar.gz" \
       | tar -xz -C /usr/local/bin migrate

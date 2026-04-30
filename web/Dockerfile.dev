@@ -29,12 +29,12 @@ RUN chown -R nextjs:nodejs /app
 # Switch to non-root user
 USER nextjs
 
-# Expose port
-EXPOSE 3000
+# Expose Vite's default port
+EXPOSE 5173
 
-# Health check
+# Health check — use wget (pre-installed in node:alpine)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost:3000 || exit 1
+    CMD wget -qO- http://localhost:5173 || exit 1
 
-# Development command
-CMD ["npm", "run", "dev"]
+# Bind to 0.0.0.0 so the port is reachable from outside the container
+CMD ["npm", "run", "dev", "--", "--host"]
