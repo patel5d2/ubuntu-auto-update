@@ -1,0 +1,10 @@
+/Users/dharminpatel/ubuntu-auto-update/agent/target/release/deps/sqlite3_sys-7e0a03d2d9b5af8b.d: /Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlite3-sys-0.15.2/src/lib.rs /Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlite3-sys-0.15.2/src/functions.rs /Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlite3-sys-0.15.2/src/types.rs /Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlite3-sys-0.15.2/src/constants.rs
+
+/Users/dharminpatel/ubuntu-auto-update/agent/target/release/deps/libsqlite3_sys-7e0a03d2d9b5af8b.rlib: /Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlite3-sys-0.15.2/src/lib.rs /Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlite3-sys-0.15.2/src/functions.rs /Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlite3-sys-0.15.2/src/types.rs /Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlite3-sys-0.15.2/src/constants.rs
+
+/Users/dharminpatel/ubuntu-auto-update/agent/target/release/deps/libsqlite3_sys-7e0a03d2d9b5af8b.rmeta: /Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlite3-sys-0.15.2/src/lib.rs /Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlite3-sys-0.15.2/src/functions.rs /Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlite3-sys-0.15.2/src/types.rs /Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlite3-sys-0.15.2/src/constants.rs
+
+/Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlite3-sys-0.15.2/src/lib.rs:
+/Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlite3-sys-0.15.2/src/functions.rs:
+/Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlite3-sys-0.15.2/src/types.rs:
+/Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlite3-sys-0.15.2/src/constants.rs:
