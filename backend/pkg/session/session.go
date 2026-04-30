@@ -210,16 +210,18 @@ func (s *dbStore) Validate(ctx context.Context, token string) (Principal, bool, 
 		userID     *int32
 		username   *string
 		role       *string
+		disabledAt *time.Time
 		agentLabel *string
 		expiresAt  time.Time
 	)
 	err := s.pool.QueryRow(ctx, `
-		SELECT s.id, s.user_id, u.username, u.role, s.agent_label, s.expires_at
+		SELECT s.id, s.user_id, u.username, u.role, u.disabled_at,
+		       s.agent_label, s.expires_at
 		FROM sessions s
 		LEFT JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = $1`,
 		hashed,
-	).Scan(&sessionID, &userID, &username, &role, &agentLabel, &expiresAt)
+	).Scan(&sessionID, &userID, &username, &role, &disabledAt, &agentLabel, &expiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Principal{}, false, nil
 	}
@@ -228,6 +230,12 @@ func (s *dbStore) Validate(ctx context.Context, token string) (Principal, bool, 
 	}
 	if time.Now().After(expiresAt) {
 		// Best-effort cleanup; don't bubble the delete failure.
+		_, _ = s.pool.Exec(ctx, `DELETE FROM sessions WHERE id = $1`, sessionID)
+		return Principal{}, false, nil
+	}
+	// A user disabled while their session is still valid loses access
+	// immediately. Drop the session so a re-enable starts clean.
+	if userID != nil && disabledAt != nil {
 		_, _ = s.pool.Exec(ctx, `DELETE FROM sessions WHERE id = $1`, sessionID)
 		return Principal{}, false, nil
 	}

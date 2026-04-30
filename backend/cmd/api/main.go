@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	pathpkg "path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -57,13 +58,22 @@ type Application struct {
 
 // dispatchWebhooks resolves subscribers for an event and queues deliveries.
 // Returns immediately; deliveries run on the dispatcher's goroutines.
+//
+// Bound the lookup with a short timeout so a stalled DB doesn't pin the
+// caller (especially when invoked from the streaming run path where the
+// websocket goroutine already has timing constraints).
 func (app *Application) dispatchWebhooks(event string, payload interface{}) {
-	hooks, err := db.GetWebhooks(context.Background(), app.DB, event)
+	lookupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	hooks, err := db.GetWebhooks(lookupCtx, app.DB, event)
 	if err != nil {
 		log.Errorf("Failed to get webhooks for event %s: %v", event, err)
 		return
 	}
 	for _, h := range hooks {
+		// Per-delivery timeout lives inside the dispatcher's HTTP client; we
+		// pass Background here so a single slow delivery doesn't tip-over
+		// every other in-flight one.
 		app.WebhookSender.Deliver(context.Background(), h.URL, payload)
 	}
 }
@@ -75,19 +85,38 @@ type spaHandler struct {
 }
 
 func (h spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	path, err := filepath.Abs(r.URL.Path)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	path = filepath.Join(h.staticPath, path)
-
-	_, err = os.Stat(path)
-	if os.IsNotExist(err) {
+	// Canonicalise the URL path and reject anything that escapes the root.
+	// path.Clean handles "..", "//", and trailing slashes; we also defensively
+	// confirm the joined absolute path stays inside staticPath so a future
+	// refactor can't reintroduce traversal.
+	cleaned := pathpkg.Clean("/" + r.URL.Path)
+	if cleaned == "/" {
 		http.ServeFile(w, r, filepath.Join(h.staticPath, h.indexPath))
 		return
-	} else if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+
+	requested := filepath.Join(h.staticPath, filepath.FromSlash(cleaned))
+	absStatic, err := filepath.Abs(h.staticPath)
+	if err != nil {
+		http.Error(w, "Server misconfigured", http.StatusInternalServerError)
+		return
+	}
+	absRequested, err := filepath.Abs(requested)
+	if err != nil {
+		http.Error(w, "Bad path", http.StatusBadRequest)
+		return
+	}
+	if !strings.HasPrefix(absRequested+string(filepath.Separator), absStatic+string(filepath.Separator)) && absRequested != absStatic {
+		http.Error(w, "Not found", http.StatusNotFound)
+		return
+	}
+
+	if _, statErr := os.Stat(absRequested); os.IsNotExist(statErr) {
+		// SPA fallback for client-side routes.
+		http.ServeFile(w, r, filepath.Join(h.staticPath, h.indexPath))
+		return
+	} else if statErr != nil {
+		http.Error(w, "Server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -125,6 +154,10 @@ func main() {
 		log.Fatalf("OPERATOR_IP_ALLOWLIST: %v", err)
 	}
 	loginLimiter := middleware.NewLoginRateLimiter()
+	// Periodically drop idle buckets so a long-lived process doesn't accumulate
+	// one map entry per distinct source IP that ever hit /login. Idle window
+	// is generous — the bucket only matters during an active brute-force burst.
+	middleware.StartLoginLimiterCleanup(cleanupCtx, loginLimiter, 10*time.Minute, time.Hour)
 
 	dispatcher := webhook.NewDispatcher()
 	sshDialer := sshpkg.NewDialer(dbPool)
@@ -148,6 +181,9 @@ func main() {
 	// don't quietly clobber a manually-created account.
 	if created, err := users.EnsureBootstrapAdmin(ctx, dbPool,
 		os.Getenv("ADMIN_USERNAME"), os.Getenv("ADMIN_PASSWORD")); err != nil {
+		if errors.Is(err, users.ErrPasswordTooShort) {
+			log.Fatalf("ADMIN_PASSWORD must be at least 12 characters; cannot bootstrap admin user")
+		}
 		log.Errorf("bootstrap admin: %v", err)
 	} else if created {
 		log.Infof("Bootstrapped initial admin user from ADMIN_USERNAME / ADMIN_PASSWORD")
@@ -176,9 +212,12 @@ func main() {
 	api := r.PathPrefix("/api/v1").Subrouter()
 	api.Use(middleware.SessionAuthMiddleware(sessionStore, authConfig))
 
-	// /report is agent-only; we let the SessionAuthMiddleware accept it
-	// (agent tokens carry RoleAgent) and the handler asserts further.
-	api.HandleFunc("/report", app.handleReport).Methods(http.MethodPost)
+	// /report is agent-only — we explicitly require RoleAgent rather than
+	// relying on a handler-level check. Without this any logged-in viewer
+	// could push report payloads.
+	reportRouter := api.PathPrefix("").Subrouter()
+	reportRouter.Use(middleware.RequireRole(session.RoleAgent))
+	reportRouter.HandleFunc("/report", app.handleReport).Methods(http.MethodPost)
 
 	// Read-only — viewer+ can see.
 	viewer := api.PathPrefix("").Subrouter()
@@ -196,7 +235,8 @@ func main() {
 	op.Use(middleware.RequireRole(session.RoleOperator))
 	// CSRF defense for cookie-auth POSTs/PATCHes/DELETEs. Bearer-auth bypasses.
 	// Disable with CSRF_DISABLED=true if you need to (e.g. CLI-only deployment).
-	if os.Getenv("CSRF_DISABLED") != "true" {
+	csrfEnabled := os.Getenv("CSRF_DISABLED") != "true"
+	if csrfEnabled {
 		op.Use(middleware.CSRFMiddleware(authConfig.CookieName))
 	}
 	op.HandleFunc("/hosts", app.handleCreateHost).Methods(http.MethodPost)
@@ -213,9 +253,14 @@ func main() {
 	op.HandleFunc("/hosts/bulk/run-update", app.handleBulkRunUpdate).Methods(http.MethodPost)
 	op.HandleFunc("/webhooks", app.handleAddWebhook).Methods(http.MethodPost)
 
-	// Admin-only — user/audit management.
+	// Admin-only — user/audit management. CSRF mirrors the operator subrouter
+	// since these endpoints are equally state-changing (and equally cookie-
+	// auth-driven from a browser).
 	admin := api.PathPrefix("").Subrouter()
 	admin.Use(middleware.RequireRole(session.RoleAdmin))
+	if csrfEnabled {
+		admin.Use(middleware.CSRFMiddleware(authConfig.CookieName))
+	}
 	admin.HandleFunc("/users", app.handleListUsers).Methods(http.MethodGet)
 	admin.HandleFunc("/users", app.handleCreateUser).Methods(http.MethodPost)
 	admin.HandleFunc("/users/{id}", app.handleUpdateUser).Methods(http.MethodPatch)
@@ -274,24 +319,24 @@ func (app *Application) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		Hostname        string `json:"hostname"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	req.Hostname = strings.TrimSpace(req.Hostname)
 	if req.Hostname == "" {
-		http.Error(w, "Hostname cannot be empty", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "Hostname cannot be empty")
 		return
 	}
 
 	enrollmentToken := os.Getenv("ENROLLMENT_TOKEN")
 	if enrollmentToken == "" {
 		log.Error("ENROLLMENT_TOKEN environment variable not set")
-		http.Error(w, "Enrollment not configured", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, "Enrollment not configured")
 		return
 	}
 	if subtle.ConstantTimeCompare([]byte(req.EnrollmentToken), []byte(enrollmentToken)) != 1 {
-		http.Error(w, "Invalid enrollment token", http.StatusUnauthorized)
+		writeJSONError(w, http.StatusUnauthorized, "Invalid enrollment token")
 		return
 	}
 
@@ -304,14 +349,14 @@ func (app *Application) handleEnroll(w http.ResponseWriter, r *http.Request) {
 			365*24*time.Hour, middleware.ClientIP(r), r.UserAgent())
 		if err != nil {
 			log.Errorf("Failed to create agent session: %v", err)
-			http.Error(w, "Failed to generate token", http.StatusInternalServerError)
+			writeJSONError(w, http.StatusInternalServerError, "Failed to generate token")
 			return
 		}
 		authToken = t
 	} else {
 		t, err := middleware.GenerateSecureToken()
 		if err != nil {
-			http.Error(w, "Failed to generate token", http.StatusInternalServerError)
+			writeJSONError(w, http.StatusInternalServerError, "Failed to generate token")
 			return
 		}
 		authToken = t
@@ -454,13 +499,13 @@ func (app *Application) handleReport(w http.ResponseWriter, r *http.Request) {
 
 	var report models.HostReport
 	if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	report.Hostname = strings.TrimSpace(report.Hostname)
 	if report.Hostname == "" {
-		http.Error(w, "Hostname cannot be empty", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "Hostname cannot be empty")
 		return
 	}
 
@@ -469,7 +514,7 @@ func (app *Application) handleReport(w http.ResponseWriter, r *http.Request) {
 	host, err := db.UpsertHost(r.Context(), app.DB, report.Hostname, "root", report.UpdateOutput, report.UpgradeOutput, "")
 	if err != nil {
 		log.Errorf("Failed to upsert host: %v", err)
-		http.Error(w, "Failed to process report", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, "Failed to process report")
 		return
 	}
 
@@ -481,7 +526,7 @@ func (app *Application) handleListHosts(w http.ResponseWriter, r *http.Request) 
 	hosts, err := db.ListHosts(r.Context(), app.DB)
 	if err != nil {
 		log.Errorf("Failed to list hosts: %v", err)
-		http.Error(w, "Failed to retrieve hosts", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, "Failed to retrieve hosts")
 		return
 	}
 
@@ -504,17 +549,17 @@ func parseHostID(r *http.Request) (int32, error) {
 func (app *Application) handleGetHost(w http.ResponseWriter, r *http.Request) {
 	id, err := parseHostID(r)
 	if err != nil {
-		http.Error(w, "Invalid host ID", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "Invalid host ID")
 		return
 	}
 
 	host, err := db.GetHost(r.Context(), app.DB, id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			http.Error(w, "Host not found", http.StatusNotFound)
+			writeJSONError(w, http.StatusNotFound, "Host not found")
 		} else {
 			log.Errorf("Failed to get host: %v", err)
-			http.Error(w, "Failed to retrieve host", http.StatusInternalServerError)
+			writeJSONError(w, http.StatusInternalServerError, "Failed to retrieve host")
 		}
 		return
 	}
@@ -729,26 +774,28 @@ func (app *Application) handleAddWebhook(w http.ResponseWriter, r *http.Request)
 
 	var req models.Webhook
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	req.URL = strings.TrimSpace(req.URL)
 	req.Event = strings.TrimSpace(req.Event)
 	if req.URL == "" || req.Event == "" {
-		http.Error(w, "URL and event are required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "URL and event are required")
 		return
 	}
 	if !strings.HasPrefix(req.URL, "http://") && !strings.HasPrefix(req.URL, "https://") {
-		http.Error(w, "URL must start with http:// or https://", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "URL must start with http:// or https://")
 		return
 	}
 
 	if _, err := app.DB.Exec(r.Context(), `INSERT INTO webhooks (url, event) VALUES ($1, $2)`, req.URL, req.Event); err != nil {
 		log.Errorf("Failed to add webhook: %v", err)
-		http.Error(w, "Failed to add webhook", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, "Failed to add webhook")
 		return
 	}
+	app.audit(r, audit.ActionWebhookCreate, "webhook", req.URL,
+		map[string]interface{}{"event": req.Event})
 	w.WriteHeader(http.StatusCreated)
 }
 
@@ -864,7 +911,7 @@ func (app *Application) handleAddSSHKey(w http.ResponseWriter, r *http.Request) 
 
 	id, err := parseHostID(r)
 	if err != nil {
-		http.Error(w, "Invalid host ID", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "Invalid host ID")
 		return
 	}
 
@@ -873,28 +920,37 @@ func (app *Application) handleAddSSHKey(w http.ResponseWriter, r *http.Request) 
 		PrivateKey string `json:"private_key"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	req.SshUser = strings.TrimSpace(req.SshUser)
 	req.PrivateKey = strings.TrimSpace(req.PrivateKey)
 	if req.SshUser == "" || req.PrivateKey == "" {
-		http.Error(w, "ssh_user and private_key are required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "ssh_user and private_key are required")
 		return
 	}
 
-	if err := db.AddSSHKey(r.Context(), app.DB, id, req.PrivateKey); err != nil {
-		log.Errorf("Failed to add SSH key: %v", err)
-		http.Error(w, "Failed to add SSH key", http.StatusInternalServerError)
+	// Sanity-check the key parses before we put it on disk in any form. Bad
+	// PEM blobs are a common operator-paste error and the worst time to find
+	// out is when the next SSH dial silently fails.
+	if _, parseErr := ssh.ParsePrivateKey([]byte(req.PrivateKey)); parseErr != nil {
+		writeJSONError(w, http.StatusBadRequest, "private_key does not parse as an OpenSSH key: "+parseErr.Error())
 		return
 	}
 
-	if _, err := app.DB.Exec(r.Context(), `UPDATE hosts SET ssh_user = $1 WHERE id = $2`, req.SshUser, id); err != nil {
-		log.Errorf("Failed to update ssh_user: %v", err)
-		http.Error(w, "Failed to update ssh_user", http.StatusInternalServerError)
+	if err := db.SetSSHKeyAndUser(r.Context(), app.DB, id, req.SshUser, req.PrivateKey); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSONError(w, http.StatusNotFound, "Host not found")
+			return
+		}
+		log.Errorf("Failed to set SSH key for host %d: %v", id, err)
+		writeJSONError(w, http.StatusInternalServerError, "Failed to save SSH key")
 		return
 	}
+
+	app.audit(r, audit.ActionHostKeyInstall, "host", strconv.FormatInt(int64(id), 10),
+		map[string]interface{}{"ssh_user": req.SshUser})
 
 	w.WriteHeader(http.StatusCreated)
 }
@@ -902,7 +958,7 @@ func (app *Application) handleAddSSHKey(w http.ResponseWriter, r *http.Request) 
 func (app *Application) handleExecuteScript(w http.ResponseWriter, r *http.Request) {
 	id, err := parseHostID(r)
 	if err != nil {
-		http.Error(w, "Invalid host ID", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "Invalid host ID")
 		return
 	}
 
@@ -920,6 +976,17 @@ func (app *Application) handleExecuteScript(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Audit every script execution. The script body itself can be unbounded;
+	// we cap what we record so a paste of a 10MB binary doesn't bloat the log.
+	scriptStr := string(script)
+	preview := scriptStr
+	const maxAuditedScript = 4096
+	if len(preview) > maxAuditedScript {
+		preview = preview[:maxAuditedScript] + "…(truncated)"
+	}
+	app.audit(r, audit.ActionRunScript, "host", strconv.FormatInt(int64(id), 10),
+		map[string]interface{}{"script_preview": preview, "script_bytes": len(scriptStr)})
+
 	sshClient, _, err := app.SSHDialer.ConnectToHost(r.Context(), id)
 	if err != nil {
 		log.Errorf("SSH connect to host %d failed: %v", id, err)
@@ -936,7 +1003,7 @@ func (app *Application) handleExecuteScript(w http.ResponseWriter, r *http.Reque
 	}
 	defer session.Close()
 
-	output, err := session.CombinedOutput(string(script))
+	output, err := session.CombinedOutput(scriptStr)
 	if err != nil {
 		log.Errorf("Script execution failed: %v", err)
 		conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("Script execution failed: %s", err.Error())))
@@ -976,7 +1043,7 @@ func buildUpdateScript(sshUser string) string {
 func (app *Application) handlePreviewUpdates(w http.ResponseWriter, r *http.Request) {
 	id, err := parseHostID(r)
 	if err != nil {
-		http.Error(w, "Invalid host ID", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "Invalid host ID")
 		return
 	}
 	app.runHostCommand(w, r, id, models.RunKindPreview, previewCommands)
@@ -988,7 +1055,7 @@ func (app *Application) handlePreviewUpdates(w http.ResponseWriter, r *http.Requ
 func (app *Application) handleRunUpdate(w http.ResponseWriter, r *http.Request) {
 	id, err := parseHostID(r)
 	if err != nil {
-		http.Error(w, "Invalid host ID", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "Invalid host ID")
 		return
 	}
 	// Look up the host first so we know which ssh_user is configured; that
@@ -996,11 +1063,11 @@ func (app *Application) handleRunUpdate(w http.ResponseWriter, r *http.Request) 
 	host, err := db.GetHost(r.Context(), app.DB, id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			http.Error(w, "Host not found", http.StatusNotFound)
+			writeJSONError(w, http.StatusNotFound, "Host not found")
 			return
 		}
 		log.Errorf("Failed to get host %d: %v", id, err)
-		http.Error(w, "Failed to retrieve host", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, "Failed to retrieve host")
 		return
 	}
 	app.runHostCommand(w, r, id, models.RunKindUpdate, []string{buildUpdateScript(host.SshUser)})

@@ -13,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	gossh "golang.org/x/crypto/ssh"
@@ -45,7 +46,7 @@ func (d *Dialer) dbHostKeyCallback() gossh.HostKeyCallback {
 		// shape (the human-typed value), so this matches.
 		expected := gossh.FingerprintSHA256(key)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 5*1_000_000_000) // 5s
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
 		var count int

@@ -44,6 +44,27 @@ type BootstrapOptions struct {
 	SudoScope string
 }
 
+// authorizedKeyMarker is appended as the SSH-key comment field on every
+// uau-installed authorized_keys entry. It serves two purposes:
+//
+//   1. Operators auditing ~/.ssh/authorized_keys can see at a glance which
+//      lines came from this tool.
+//   2. RotateKey uses the marker as the search key when stripping prior
+//      uau-installed keys after a successful rotation. Without this marker
+//      MarshalAuthorizedKey produces a bare "ssh-ed25519 BASE64" line with
+//      no distinguishing field, and rotation cannot tell which lines to
+//      revoke. Don't change the literal without also updating the awk in
+//      RotateKey.
+const authorizedKeyMarker = "ubuntu-auto-update"
+
+// formatAuthorizedKey renders a public key as the canonical authorized_keys
+// line we install: `<algo> <base64> <marker>`. Trimming the trailing newline
+// keeps shell-quoted comparisons predictable.
+func formatAuthorizedKey(pub gossh.PublicKey) string {
+	line := strings.TrimRight(string(gossh.MarshalAuthorizedKey(pub)), "\n")
+	return line + " " + authorizedKeyMarker
+}
+
 // scopedSudoersBody returns the body of the sudoers drop-in for `user` and
 // `scope`. Scope "apt" pins the rule to apt / apt-get / unattended-upgrade;
 // "full" matches the original behaviour (NOPASSWD: ALL).
@@ -110,9 +131,9 @@ func (d *Dialer) BootstrapOpts(ctx context.Context, hostname, sshUser, password 
 	if err != nil {
 		return BootstrapResult{}, fmt.Errorf("derive ssh public key: %w", err)
 	}
-	authorizedKey := strings.TrimRight(string(gossh.MarshalAuthorizedKey(sshPub)), "\n")
+	authorizedKey := formatAuthorizedKey(sshPub)
 
-	pemBlock, err := gossh.MarshalPrivateKey(privKey, "ubuntu-auto-update")
+	pemBlock, err := gossh.MarshalPrivateKey(privKey, authorizedKeyMarker)
 	if err != nil {
 		return BootstrapResult{}, fmt.Errorf("marshal private key: %w", err)
 	}
@@ -251,9 +272,9 @@ func (d *Dialer) RotateKey(ctx context.Context, hostID int32) (BootstrapResult, 
 	if err != nil {
 		return BootstrapResult{}, fmt.Errorf("derive ssh public key: %w", err)
 	}
-	newAuthorizedKey := strings.TrimRight(string(gossh.MarshalAuthorizedKey(sshPub)), "\n")
+	newAuthorizedKey := formatAuthorizedKey(sshPub)
 
-	pemBlock, err := gossh.MarshalPrivateKey(privKey, "ubuntu-auto-update")
+	pemBlock, err := gossh.MarshalPrivateKey(privKey, authorizedKeyMarker)
 	if err != nil {
 		return BootstrapResult{}, fmt.Errorf("marshal private key: %w", err)
 	}
@@ -302,36 +323,37 @@ chmod 600 "$HOME/.ssh/authorized_keys"
 	}
 	verifyClient.Close()
 
-	// Revoke any other ubuntu-auto-update-managed keys (we tag them via the
-	// MarshalPrivateKey comment "ubuntu-auto-update"). We keep the line whose
-	// public-key blob matches our newly installed key.
+	// Revoke any other ubuntu-auto-update-managed keys. We identify them by
+	// the marker we appended as the comment field at install time
+	// (authorizedKeyMarker). awk drops a line iff its last whitespace token
+	// is the marker AND the whole line isn't the new key we just installed.
+	// Other operator-installed keys (no marker) are preserved.
 	revokeScript := fmt.Sprintf(`set -e
 keep=%s
+marker=%s
 tmp="$(mktemp)"
-awk -v keep="$keep" '
+awk -v keep="$keep" -v marker="$marker" '
   $0 == keep { print; next }
-  /ubuntu-auto-update/ { next }
+  $NF == marker { next }
   { print }
 ' "$HOME/.ssh/authorized_keys" > "$tmp"
 mv "$tmp" "$HOME/.ssh/authorized_keys"
 chmod 600 "$HOME/.ssh/authorized_keys"
-`, shellQuote(newAuthorizedKey))
+`, shellQuote(newAuthorizedKey), shellQuote(authorizedKeyMarker))
 
 	if out, err := runCommand(client, revokeScript, nil); err != nil {
 		// Non-fatal: the new key works, the old one might still be there.
-		// The caller will see SudoConfigured=true but should log this output.
+		// Return the new key so the caller can persist it; the warning is
+		// surfaced via the returned error.
 		return BootstrapResult{
 			PrivateKeyPEM: privPEM,
 			AuthorizedKey: newAuthorizedKey,
-			SudoConfigured: true,
-			SudoScope:      "",
 		}, fmt.Errorf("rotate succeeded but failed to revoke old keys: %w (output: %s)", err, trimTo(out, 400))
 	}
 
 	return BootstrapResult{
-		PrivateKeyPEM:  privPEM,
-		AuthorizedKey:  newAuthorizedKey,
-		SudoConfigured: true,
+		PrivateKeyPEM: privPEM,
+		AuthorizedKey: newAuthorizedKey,
 	}, nil
 }
 

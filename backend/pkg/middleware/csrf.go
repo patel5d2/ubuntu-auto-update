@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"net/http"
+	"os"
 	"strings"
 )
 
@@ -35,14 +36,15 @@ func GenerateCSRFToken() (string, error) {
 }
 
 // SetCSRFCookie writes the CSRF token cookie. NOT HttpOnly: the browser JS
-// reads this and echoes it as a header.
+// reads this and echoes it as a header. Secure follows ENVIRONMENT=production
+// to match the auth cookie's policy.
 func SetCSRFCookie(w http.ResponseWriter, token string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     CSRFCookieName,
 		Value:    token,
 		Path:     "/",
 		HttpOnly: false,
-		Secure:   false,
+		Secure:   isProduction(),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   86400,
 	})
@@ -55,10 +57,14 @@ func ClearCSRFCookie(w http.ResponseWriter) {
 		Value:    "",
 		Path:     "/",
 		HttpOnly: false,
-		Secure:   false,
+		Secure:   isProduction(),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})
+}
+
+func isProduction() bool {
+	return os.Getenv("ENVIRONMENT") == "production"
 }
 
 // CSRFMiddleware enforces the double-submit pattern for state-changing

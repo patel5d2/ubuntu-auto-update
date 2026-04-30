@@ -16,18 +16,18 @@ import (
 	"ubuntu-auto-update/backend/pkg/models"
 )
 
-// dialer pool getter for the DB-backed host-key callback.
-func (d *Dialer) Pool() *pgxpool.Pool { return d.pool }
-
 const dialTimeout = 30 * time.Second
 
 // Dialer holds a cached host-key callback so we don't reread known_hosts on
-// every connection.
+// every connection. When the source is the on-disk known_hosts file the
+// callback genuinely is a one-time load; for the DB-backed source the
+// "cache" is just the closure pointer.
 type Dialer struct {
-	pool        *pgxpool.Pool
-	hostKeyOnce sync.Once
-	hostKeyCB   ssh.HostKeyCallback
-	hostKeyErr  error
+	pool       *pgxpool.Pool
+	hostKeyMu  sync.RWMutex
+	hostKeyCB  ssh.HostKeyCallback
+	hostKeyErr error
+	hostKeyOK  bool
 }
 
 func NewDialer(pool *pgxpool.Pool) *Dialer {
@@ -43,42 +43,61 @@ func NewDialer(pool *pgxpool.Pool) *Dialer {
 //   - "file" reads the on-disk known_hosts file at KNOWN_HOSTS_FILE
 //            (default ./known_hosts) — kept as an escape hatch for legacy
 //            deployments and for offline testing.
+//
+// Concurrency: a mutex guards the cached callback rather than sync.Once
+// because invalidateHostKeyCache needs to swap the cache atomically when
+// Bootstrap captures a new TOFU key. Reassigning a sync.Once would itself
+// be a data race against in-flight callers.
 func (d *Dialer) hostKeyCallback() (ssh.HostKeyCallback, error) {
-	d.hostKeyOnce.Do(func() {
-		mode := os.Getenv("HOST_KEY_STORE")
-		if mode == "" {
-			if d.pool != nil {
-				mode = "db"
-			} else {
-				mode = "file"
-			}
+	d.hostKeyMu.RLock()
+	if d.hostKeyOK {
+		cb, err := d.hostKeyCB, d.hostKeyErr
+		d.hostKeyMu.RUnlock()
+		return cb, err
+	}
+	d.hostKeyMu.RUnlock()
+
+	d.hostKeyMu.Lock()
+	defer d.hostKeyMu.Unlock()
+	// Re-check under write lock — another goroutine may have populated it.
+	if d.hostKeyOK {
+		return d.hostKeyCB, d.hostKeyErr
+	}
+
+	mode := os.Getenv("HOST_KEY_STORE")
+	if mode == "" {
+		if d.pool != nil {
+			mode = "db"
+		} else {
+			mode = "file"
 		}
-		switch mode {
-		case "db":
-			d.hostKeyCB = d.dbHostKeyCallback()
-		case "file":
-			path := os.Getenv("KNOWN_HOSTS_FILE")
-			if path == "" {
-				path = "known_hosts"
-			}
-			d.hostKeyCB, d.hostKeyErr = knownhosts.New(path)
-		default:
-			d.hostKeyErr = fmt.Errorf("unknown HOST_KEY_STORE %q (want \"db\" or \"file\")", mode)
+	}
+	switch mode {
+	case "db":
+		d.hostKeyCB = d.dbHostKeyCallback()
+	case "file":
+		path := os.Getenv("KNOWN_HOSTS_FILE")
+		if path == "" {
+			path = "known_hosts"
 		}
-	})
+		d.hostKeyCB, d.hostKeyErr = knownhosts.New(path)
+	default:
+		d.hostKeyErr = fmt.Errorf("unknown HOST_KEY_STORE %q (want \"db\" or \"file\")", mode)
+	}
+	d.hostKeyOK = true
 	return d.hostKeyCB, d.hostKeyErr
 }
 
 // invalidateHostKeyCache forces the next ConnectToHost call to re-read
 // known_hosts. Used after Bootstrap appends a TOFU-captured host key so
 // the operator doesn't have to restart the backend before the host
-// becomes usable. Field writes are protected by hostKeyOnce's reset
-// pattern; safe under the assumption that bootstrap is rare and not
-// concurrent with itself.
+// becomes usable.
 func (d *Dialer) invalidateHostKeyCache() {
-	d.hostKeyOnce = sync.Once{}
+	d.hostKeyMu.Lock()
 	d.hostKeyCB = nil
 	d.hostKeyErr = nil
+	d.hostKeyOK = false
+	d.hostKeyMu.Unlock()
 }
 
 // TestResult summarizes a quick health probe: did SSH dial succeed, how long

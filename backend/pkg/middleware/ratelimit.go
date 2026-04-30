@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"os"
@@ -72,6 +73,25 @@ func (l *LoginRateLimiter) CleanIdle(older time.Duration) {
 	}
 }
 
+// StartLoginLimiterCleanup runs CleanIdle on `interval`, dropping buckets
+// idle for `idle`. Stops when ctx is cancelled. Without this the bucket map
+// grows unboundedly across the lifetime of the process — one entry per
+// distinct source IP that ever hit /login.
+func StartLoginLimiterCleanup(ctx context.Context, l *LoginRateLimiter, interval, idle time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				l.CleanIdle(idle)
+			}
+		}
+	}()
+}
+
 // ---------------------------------------------------------------------------
 // IP allowlist + helpers.
 // ---------------------------------------------------------------------------
@@ -138,11 +158,13 @@ func (a *IPAllowlist) Allow(remoteAddr string) bool {
 }
 
 // IPAllowlistMiddleware blocks requests whose remote IP isn't on the list.
-// Disabled lists pass everything through.
+// Disabled lists pass everything through. Uses ClientIP so X-Forwarded-For
+// is honored when TRUST_FORWARDED_FOR is set — required behind any load
+// balancer or reverse proxy.
 func IPAllowlistMiddleware(a *IPAllowlist) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !a.Allow(r.RemoteAddr) {
+			if !a.Allow(ClientIP(r)) {
 				SendForbiddenError(w, "Source IP is not allowed")
 				return
 			}

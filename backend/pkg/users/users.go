@@ -193,22 +193,31 @@ func Authenticate(ctx context.Context, db *pgxpool.Pool, username, password stri
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password)); err != nil {
+		// Detached ctx: a brute-force attack will close connections quickly.
+		// We still need the failure counter to advance so the lockout actually
+		// engages, even if the original request times out or is cancelled.
+		bumpCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 		newFailed := failedLogins + 1
 		if newFailed >= MaxFailedLogins {
 			lock := time.Now().Add(LockoutDuration)
-			_, _ = db.Exec(ctx, `
+			_, _ = db.Exec(bumpCtx, `
 				UPDATE users SET failed_logins = $2, locked_until = $3, updated_at = NOW()
 				WHERE id = $1`, id, newFailed, lock)
 		} else {
-			_, _ = db.Exec(ctx, `
+			_, _ = db.Exec(bumpCtx, `
 				UPDATE users SET failed_logins = $2, updated_at = NOW()
 				WHERE id = $1`, id, newFailed)
 		}
 		return User{}, ErrInvalidCredentials
 	}
 
-	// Success: reset counters and update last_login_at.
-	_, _ = db.Exec(ctx, `
+	// Success: reset counters and update last_login_at. Same detached-ctx
+	// reason — the user is logged in regardless of whether this side-effect
+	// completes.
+	bumpCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _ = db.Exec(bumpCtx, `
 		UPDATE users
 		SET failed_logins = 0, locked_until = NULL,
 		    last_login_at = NOW(), updated_at = NOW()
@@ -289,6 +298,10 @@ func Delete(ctx context.Context, db *pgxpool.Pool, userID int32) error {
 // EnsureBootstrapAdmin creates the first admin from ADMIN_USERNAME /
 // ADMIN_PASSWORD env vars if and only if the users table is empty. Idempotent
 // and safe to call on every startup. Returns whether a user was created.
+//
+// Returns ErrPasswordTooShort directly (not wrapped) when ADMIN_PASSWORD is
+// shorter than the policy floor — startup callers usually want to surface
+// that as a fatal misconfiguration rather than continue with no admin.
 func EnsureBootstrapAdmin(ctx context.Context, db *pgxpool.Pool, username, password string) (bool, error) {
 	username = strings.TrimSpace(username)
 	if username == "" || password == "" {
@@ -302,6 +315,9 @@ func EnsureBootstrapAdmin(ctx context.Context, db *pgxpool.Pool, username, passw
 		return false, nil
 	}
 	if _, err := Create(ctx, db, username, password, "admin"); err != nil {
+		if errors.Is(err, ErrPasswordTooShort) {
+			return false, ErrPasswordTooShort
+		}
 		return false, fmt.Errorf("create bootstrap admin: %w", err)
 	}
 	return true, nil

@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestLoginRateLimiter_AllowsBurst(t *testing.T) {
@@ -89,6 +90,51 @@ func TestIPAllowlistMiddleware_Blocks(t *testing.T) {
 	h.ServeHTTP(rw2, r2)
 	if rw2.Code != http.StatusOK {
 		t.Errorf("allowed IP should pass, got %d", rw2.Code)
+	}
+}
+
+// Behind a load balancer the proxy hits us with its own IP; the real client
+// is in X-Forwarded-For. With TRUST_FORWARDED_FOR the middleware must use it.
+func TestIPAllowlistMiddleware_HonorsXFF(t *testing.T) {
+	a, _ := NewIPAllowlist("10.0.0.0/8")
+	h := IPAllowlistMiddleware(a)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	t.Setenv("TRUST_FORWARDED_FOR", "true")
+
+	// Disallowed proxy, but the real client (XFF) is allowed.
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "8.8.8.8:1"
+	r.Header.Set("X-Forwarded-For", "10.0.0.5")
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, r)
+	if rw.Code != http.StatusOK {
+		t.Errorf("XFF-trusted client in CIDR should pass, got %d", rw.Code)
+	}
+
+	// Allowed proxy, but the real client (XFF) isn't.
+	r2 := httptest.NewRequest("GET", "/", nil)
+	r2.RemoteAddr = "10.0.0.1:1"
+	r2.Header.Set("X-Forwarded-For", "8.8.8.8")
+	rw2 := httptest.NewRecorder()
+	h.ServeHTTP(rw2, r2)
+	if rw2.Code != http.StatusForbidden {
+		t.Errorf("XFF-trusted client outside CIDR should be blocked, got %d", rw2.Code)
+	}
+}
+
+func TestLoginRateLimiter_CleanIdleDropsOldBuckets(t *testing.T) {
+	l := NewLoginRateLimiter()
+	l.Allow("10.0.0.1")
+	l.Allow("10.0.0.2")
+	if got := len(l.buckets); got != 2 {
+		t.Fatalf("expected 2 buckets, got %d", got)
+	}
+	// CleanIdle with a negative window deletes everything.
+	l.CleanIdle(-time.Hour)
+	if got := len(l.buckets); got != 0 {
+		t.Errorf("expected 0 buckets after CleanIdle, got %d", got)
 	}
 }
 

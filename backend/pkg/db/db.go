@@ -164,6 +164,42 @@ func AddSSHKey(ctx context.Context, db *pgxpool.Pool, hostID int32, privateKey s
 	return err
 }
 
+// SetSSHKeyAndUser stores the SSH key and updates the host's ssh_user in a
+// single transaction. The previous two-step path could leave the new key
+// paired with the old ssh_user if the second statement failed.
+func SetSSHKeyAndUser(ctx context.Context, db *pgxpool.Pool, hostID int32, sshUser, privateKey string) error {
+	encryptedKey, err := crypto.Encrypt(privateKey)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt SSH key: %w", err)
+	}
+
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	// Rollback is a no-op after a successful Commit, so we always defer it.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO ssh_keys (host_id, private_key)
+		VALUES ($1, $2)
+		ON CONFLICT (host_id) DO UPDATE
+		SET private_key = $2
+	`, hostID, encryptedKey); err != nil {
+		return fmt.Errorf("upsert ssh_key: %w", err)
+	}
+
+	tag, err := tx.Exec(ctx, `UPDATE hosts SET ssh_user = $1, updated_at = NOW() WHERE id = $2`, sshUser, hostID)
+	if err != nil {
+		return fmt.Errorf("update ssh_user: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+
+	return tx.Commit(ctx)
+}
+
 func GetWebhooks(ctx context.Context, db *pgxpool.Pool, event string) ([]models.Webhook, error) {
 	rows, err := db.Query(ctx, `SELECT id, url, event FROM webhooks WHERE event = $1`, event)
 	if err != nil {

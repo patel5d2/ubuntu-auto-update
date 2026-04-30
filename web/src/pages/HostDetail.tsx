@@ -119,7 +119,11 @@ export function HostDetail() {
     event.preventDefault();
     if (!hostId) return;
 
-    const data = new FormData(event.currentTarget);
+    // Capture the form element BEFORE await — React's synthetic event recycles
+    // currentTarget after the handler returns, so accessing it after a network
+    // round trip can throw or silently no-op.
+    const form = event.currentTarget;
+    const data = new FormData(form);
     const sshUser = String(data.get('autoSshUser') ?? '').trim();
     const password = String(data.get('autoPassword') ?? '');
     if (password === '') {
@@ -137,8 +141,8 @@ export function HostDetail() {
       );
       const sudoNote = result.sudo_configured ? '' : ' (root user — no sudo needed)';
       toast.show(`Configured. Key generated and installed${sudoNote}.`, 'success');
-      // Reset the form so the password isn't left sitting in the DOM.
-      event.currentTarget.reset();
+      // Reset the captured form so the password isn't left sitting in the DOM.
+      form.reset();
       apiGet<Host>(`/api/v1/hosts/${hostId}`).then(setHost).catch(() => {});
     } catch (err) {
       toast.show(err instanceof Error ? err.message : 'Auto-configure failed.', 'error');
