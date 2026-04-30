@@ -136,8 +136,14 @@ describe('HostDetail', () => {
     await screen.findByText('phase-c-test');
     fireEvent.click(screen.getByRole('tab', { name: /SSH/ }));
 
+    // Two "SSH User" inputs live on the SSH tab (auto-configure + paste-key);
+    // both should reflect the host's current user.
     await waitFor(() => {
-      expect(screen.getByLabelText(/SSH User/i)).toHaveValue('ubuntu');
+      const inputs = screen.getAllByLabelText(/SSH User/i) as HTMLInputElement[];
+      expect(inputs.length).toBeGreaterThan(0);
+      for (const input of inputs) {
+        expect(input).toHaveValue('ubuntu');
+      }
     });
   });
 });

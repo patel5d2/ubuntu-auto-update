@@ -366,12 +366,14 @@ func (app *Application) handleLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		middleware.SetAuthCookie(w, app.AuthConfig, tok)
+		csrf, _ := middleware.GenerateCSRFToken()
+		middleware.SetCSRFCookie(w, csrf)
 		app.audit(r, audit.ActionLoginSuccess, "user", strconv.FormatInt(int64(u.ID), 10),
 			map[string]interface{}{"username": u.Username})
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"token": tok, "role": u.Role})
+		json.NewEncoder(w).Encode(map[string]string{"token": tok, "role": u.Role, "csrf_token": csrf})
 		return
 	}
 
@@ -442,6 +444,7 @@ func (app *Application) handleLogout(w http.ResponseWriter, r *http.Request) {
 		app.TokenStore.RemoveToken(tok)
 	}
 	middleware.ClearAuthCookie(w, app.AuthConfig)
+	middleware.ClearCSRFCookie(w)
 	app.audit(r, audit.ActionLogout, "session", "", nil)
 	w.WriteHeader(http.StatusOK)
 }

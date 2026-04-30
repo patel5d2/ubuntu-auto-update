@@ -18,12 +18,14 @@ export function AddHostModal({ open, onClose, onCreated }: AddHostModalProps) {
   const [submitting, setSubmitting] = useState(false);
   const [enrolling, setEnrolling] = useState(false);
   const [hostnameError, setHostnameError] = useState('');
+  const [submitError, setSubmitError] = useState<{ message: string; hint?: string } | null>(null);
   const toast = useToast();
   const firstFieldRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (open) {
       setHostnameError('');
+      setSubmitError(null);
       // Focus the first field on open so the user can start typing immediately.
       queueMicrotask(() => firstFieldRef.current?.focus());
     }
@@ -54,6 +56,7 @@ export function AddHostModal({ open, onClose, onCreated }: AddHostModalProps) {
       return;
     }
     setHostnameError('');
+    setSubmitError(null);
     setSubmitting(true);
     setEnrolling(password !== '');
 
@@ -79,6 +82,22 @@ export function AddHostModal({ open, onClose, onCreated }: AddHostModalProps) {
       onClose();
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to add host.';
+      // The backend prefixes auto-enroll failures with "Auto-enrollment failed: ".
+      // The bootstrap.classifyAuthErr layer below that returns one of a few
+      // common, actionable strings — we hint at the right next step here so
+      // operators don't have to guess.
+      const lower = message.toLowerCase();
+      let hint: string | undefined;
+      if (lower.includes('authentication failed')) {
+        hint = 'Check the SSH user and password. Confirm the host has PasswordAuthentication yes in /etc/ssh/sshd_config.';
+      } else if (lower.includes('connection refused')) {
+        hint = 'sshd is not running on port 22. Start it on the host (sudo systemctl start ssh) and try again.';
+      } else if (lower.includes('could not reach')) {
+        hint = 'The backend container cannot reach this host. Check the IP/hostname and any firewalls between them.';
+      } else if (lower.includes('verify passwordless sudo')) {
+        hint = 'Sudo did not configure passwordlessly. Either run as root, or pre-configure /etc/sudoers.d/ on the host.';
+      }
+      setSubmitError({ message, hint });
       toast.show(message, 'error');
     } finally {
       setSubmitting(false);
@@ -146,6 +165,18 @@ export function AddHostModal({ open, onClose, onCreated }: AddHostModalProps) {
             encrypted. Your password is used in-memory only and never saved.
             Leave it blank to paste a key manually from the host's detail page.
           </small>
+
+          {submitError && (
+            <article style={{ marginTop: '1rem', borderLeft: '4px solid #c0392b', padding: '0.75rem 1rem' }}>
+              <strong>Couldn't add host.</strong>
+              <div style={{ marginTop: '0.25rem' }}>{submitError.message}</div>
+              {submitError.hint && (
+                <small style={{ display: 'block', marginTop: '0.25rem', opacity: 0.8 }}>
+                  Hint: {submitError.hint}
+                </small>
+              )}
+            </article>
+          )}
 
           <footer style={{ marginTop: '1rem' }}>
             <button

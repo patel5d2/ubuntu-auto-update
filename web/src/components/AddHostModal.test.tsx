@@ -90,9 +90,10 @@ describe('AddHostModal', () => {
     fireEvent.change(screen.getByLabelText(/Hostname/i), { target: { value: 'host' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add host' }));
 
-    await waitFor(() =>
-      expect(screen.getByText(/A host with that hostname already exists/i)).toBeInTheDocument(),
-    );
+    // The error surfaces in two places: the toast and the inline article in the
+    // modal. findAllByText accepts >=1 match.
+    const matches = await screen.findAllByText(/A host with that hostname already exists/i);
+    expect(matches.length).toBeGreaterThanOrEqual(1);
     expect(onCreated).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
   });

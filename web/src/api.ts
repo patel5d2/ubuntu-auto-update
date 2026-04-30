@@ -13,7 +13,23 @@ function authHeaders(): Record<string, string> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   const token = localStorage.getItem('auth_token');
   if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  // Double-submit CSRF: the backend issues a non-HttpOnly csrf_token cookie
+  // at login. Read it back here so cookie-auth requests echo it as a header.
+  const csrf = readCookie('csrf_token');
+  if (csrf) headers['X-CSRF-Token'] = csrf;
   return headers;
+}
+
+function readCookie(name: string): string | undefined {
+  const target = `${name}=`;
+  for (const part of document.cookie.split(';')) {
+    const trimmed = part.trim();
+    if (trimmed.startsWith(target)) {
+      return decodeURIComponent(trimmed.slice(target.length));
+    }
+  }
+  return undefined;
 }
 
 async function request<T>(endpoint: string, init: RequestInit, redirectOn401 = true): Promise<T> {
@@ -70,14 +86,21 @@ export function apiDelete<T = void>(
   return request<T>(endpoint, { method: 'DELETE', headers });
 }
 
-export async function apiLogin(username: string, password: string): Promise<{ token: string }> {
+export interface LoginResponse {
+  token: string;
+  role?: string;
+  csrf_token?: string;
+}
+
+export async function apiLogin(username: string, password: string): Promise<LoginResponse> {
   // Login must not redirect on 401 — it would loop. Show the error to the user instead.
-  const data = await request<{ token: string }>(
+  const data = await request<LoginResponse>(
     '/api/v1/login',
     { method: 'POST', body: JSON.stringify({ username, password }) },
     false,
   );
   if (data.token) localStorage.setItem('auth_token', data.token);
+  if (data.role) localStorage.setItem('auth_role', data.role);
   return data;
 }
 
@@ -88,6 +111,7 @@ export async function apiLogout(): Promise<void> {
     // network failure is non-fatal — we still clear client state below
   }
   localStorage.removeItem('auth_token');
+  localStorage.removeItem('auth_role');
   window.location.href = '/login';
 }
 
@@ -95,6 +119,28 @@ export function isAuthenticated(): boolean {
   // The auth cookie is HttpOnly; we rely on the token stashed at login.
   // The server is the source of truth: a stale token returns 401 and we redirect.
   return !!localStorage.getItem('auth_token');
+}
+
+/**
+ * Returns the cached role from localStorage. Treat as a hint — the server
+ * is the source of truth and will 403 unauthorized actions regardless.
+ */
+export function currentRole(): string {
+  return localStorage.getItem('auth_role') || '';
+}
+
+/**
+ * canDoOperator / canDoAdmin: tiny helpers so UI components hide buttons
+ * when the user obviously can't use them. Server-side enforcement is what
+ * actually keeps the app safe.
+ */
+export function canDoOperator(): boolean {
+  const r = currentRole();
+  return r === 'operator' || r === 'admin';
+}
+
+export function canDoAdmin(): boolean {
+  return currentRole() === 'admin';
 }
 
 export function createWebSocket(endpoint: string): WebSocket {
