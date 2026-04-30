@@ -29,7 +29,7 @@ chmod +x scripts/*.sh
 ./scripts/test.sh
 
 # Start development environment
-docker-compose -f docker-compose.dev.yml up -d
+docker compose -f docker-compose.dev.yml up -d
 ```
 
 ## 🔧 Component Development
@@ -107,40 +107,49 @@ npm run type-check
 
 ### Building Images
 
+The production image is a single unified "dark container" built from the
+root `Dockerfile`. The Go backend serves the React bundle as static assets
+out of `/app/public`, so there is no separate frontend container in prod.
+
 ```bash
-# Build all images
+# Build the unified production image (tags: ghcr.io/patel5d2/ubuntu-auto-update)
 ./scripts/build.sh --docker
 
-# Build individual components
-docker build -t ubuntu-auto-update/agent:dev ./agent
-docker build -f backend/Dockerfile.dev -t ubuntu-auto-update/backend:dev ./backend
-docker build -f web/Dockerfile.dev -t ubuntu-auto-update/frontend:dev ./web
+# Or build it directly
+docker build -t ghcr.io/patel5d2/ubuntu-auto-update:latest .
+
+# Build the standalone agent image (used by docker-compose.dev.yml)
+docker build -t ghcr.io/patel5d2/ubuntu-auto-update/agent:latest ./agent
+
+# Dev-only images (hot-reload variants used by docker-compose.dev.yml)
+docker build -f backend/Dockerfile.dev -t uau-backend:dev ./backend
+docker build -f web/Dockerfile.dev     -t uau-frontend:dev ./web
 ```
 
 ### Development Environment
 
 ```bash
-# Start core services (database, cache, backend)
-docker-compose -f docker-compose.dev.yml up -d postgres redis backend
+# Start core services (Postgres + Go backend with hot-reload)
+docker compose -f docker-compose.dev.yml up -d postgres backend
 
-# Start full stack
-docker-compose -f docker-compose.dev.yml up -d
+# Start full stack (postgres + backend + Vite frontend)
+docker compose -f docker-compose.dev.yml up -d
 
 # View logs
-docker-compose -f docker-compose.dev.yml logs -f backend
+docker compose -f docker-compose.dev.yml logs -f backend
 
-# Start with monitoring
-docker-compose -f docker-compose.dev.yml --profile monitoring up -d
+# Start with monitoring (adds Prometheus + Grafana)
+docker compose -f docker-compose.dev.yml --profile monitoring up -d
 ```
 
 ### Testing in Containers
 
 ```bash
-# Test agent in container
-docker-compose -f docker-compose.dev.yml --profile agent run --rm agent status
+# Test agent in container (non-privileged: enroll/status only)
+docker compose -f docker-compose.dev.yml --profile agent run --rm agent status
 
-# Test with actual system access (privileged)
-docker-compose -f docker-compose.dev.yml --profile system-agent run --rm agent-system run --dry-run
+# Test with actual system access (privileged: runs apt on host)
+docker compose -f docker-compose.dev.yml --profile system-agent run --rm agent-system run --dry-run
 ```
 
 ## 🧪 Testing Strategy
@@ -215,17 +224,17 @@ curl http://localhost:9090/metrics
 
 ```bash
 # 1. Start full environment
-docker-compose -f docker-compose.dev.yml up -d
+docker compose -f docker-compose.dev.yml up -d
 
 # 2. Wait for services
 sleep 30
 
 # 3. Test agent enrollment and run
-docker-compose -f docker-compose.dev.yml --profile agent run --rm agent enroll "dev-enrollment-token-12345"
-docker-compose -f docker-compose.dev.yml --profile agent run --rm agent run --dry-run
+docker compose -f docker-compose.dev.yml --profile agent run --rm agent enroll "dev-enrollment-token"
+docker compose -f docker-compose.dev.yml --profile agent run --rm agent run --dry-run
 
-# 4. Check web UI
-open http://localhost:3000
+# 4. Check web UI (Vite dev server)
+open http://localhost:5173
 
 # 5. Check metrics
 open http://localhost:3001  # Grafana (if monitoring profile enabled)
@@ -249,12 +258,12 @@ cd backend && gosec ./...
 ### Container Security
 
 ```bash
-# Scan for vulnerabilities
-docker scout cves ubuntu-auto-update/agent:latest
+# Scan the unified image for CVEs
+docker scout cves ghcr.io/patel5d2/ubuntu-auto-update:latest
 
-# Check image for secrets
+# Inspect image layers for accidentally-committed secrets
 docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-  wagoodman/dive:latest ubuntu-auto-update/agent:latest
+  wagoodman/dive:latest ghcr.io/patel5d2/ubuntu-auto-update:latest
 ```
 
 ## 🚀 Production Builds
@@ -306,7 +315,7 @@ The system provides comprehensive metrics at multiple levels:
 3. **System Metrics**:
    ```bash
    # Start with monitoring profile
-   docker-compose -f docker-compose.dev.yml --profile monitoring up -d
+   docker compose -f docker-compose.dev.yml --profile monitoring up -d
    
    # Access Grafana
    open http://localhost:3001
@@ -320,7 +329,7 @@ The system provides comprehensive metrics at multiple levels:
 tail -f /var/log/ubuntu-auto-update/agent.log
 
 # Backend logs (Docker)
-docker-compose -f docker-compose.dev.yml logs -f backend
+docker compose -f docker-compose.dev.yml logs -f backend
 
 # System logs
 journalctl -u ubuntu-auto-update-agent.service -f
@@ -354,7 +363,7 @@ npm install
 ua-agent test  # Test connectivity
 
 # Backend database issues
-docker-compose -f docker-compose.dev.yml logs postgres
+docker compose -f docker-compose.dev.yml logs postgres
 
 # Permission issues (Linux)
 sudo chown -R $USER:$USER /etc/ubuntu-auto-update
@@ -367,8 +376,8 @@ sudo chown -R $USER:$USER /etc/ubuntu-auto-update
 docker system prune -a  # Clean up
 
 # Container won't start
-docker-compose -f docker-compose.dev.yml down -v
-docker-compose -f docker-compose.dev.yml up -d --force-recreate
+docker compose -f docker-compose.dev.yml down -v
+docker compose -f docker-compose.dev.yml up -d --force-recreate
 ```
 
 ### Debug Mode
@@ -377,7 +386,7 @@ docker-compose -f docker-compose.dev.yml up -d --force-recreate
 # Enable debug logging
 export RUST_LOG=debug
 export LOG_LEVEL=debug
-export UAU_LOGGING__LEVEL=debug
+export UA_LOGGING__LEVEL=debug
 
 # Run with verbose output
 ua-agent -vv run --dry-run
@@ -455,21 +464,34 @@ EXPLAIN ANALYZE SELECT * FROM hosts WHERE last_seen > NOW() - INTERVAL '1 hour';
 
 ### Self-Hosted Deployment
 
-```bash
-# Production deployment
-./scripts/build.sh --release
-./agent/install.sh --backend-url https://your-server.com --enrollment-token TOKEN
-
-# Container deployment
-docker-compose -f docker-compose.prod.yml up -d
-```
-
-### Kubernetes Deployment
+The production stack is one Postgres container plus the unified app
+container (built from the root `Dockerfile`). `docker-compose.yml` wires
+them together.
 
 ```bash
-# Using Helm (when charts are ready)
-helm install ubuntu-auto-update ./infrastructure/helm/ubuntu-auto-update \
-  --set backend.url=https://your-server.com
+# Easiest: generate .env with random secrets and bring the stack up
+./quickstart.sh up
+
+# Or do it manually
+cp .env.example .env             # then fill in ADMIN_*/ENROLLMENT_TOKEN
+docker compose up -d             # uses docker-compose.yml + root Dockerfile
+
+# Pull the pre-built image instead of building locally
+docker pull ghcr.io/patel5d2/ubuntu-auto-update:latest
 ```
 
-This development guide covers the essentials for building, testing, and deploying the Ubuntu Auto-Update system. For production deployments, see the main README and deployment documentation.
+The image is published by `.github/workflows/docker-image.yml` for both
+`linux/amd64` and `linux/arm64` on every push to `main`.
+
+To install the Rust agent on a managed Ubuntu host:
+
+```bash
+# Build a release binary, then install the systemd unit + timer
+./scripts/build.sh --release --agent-only
+sudo ./install.sh --backend-url https://your-server.com \
+                  --enrollment-token "$ENROLLMENT_TOKEN"
+```
+
+This development guide covers the essentials for building, testing, and
+deploying the Ubuntu Auto-Update system. For the user-facing quick start,
+see [`README.md`](README.md).

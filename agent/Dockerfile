@@ -1,6 +1,6 @@
 # Multi-stage build for Ubuntu Auto-Update Agent
 # Stage 1: Build the Rust binary
-FROM rust:1.75-slim as builder
+FROM rust:1.75-slim AS builder
 
 # Install system dependencies for building
 RUN apt-get update && apt-get install -y \
