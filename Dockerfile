@@ -46,12 +46,13 @@ COPY --from=frontend-builder /web/dist /app/public
 
 RUN chmod +x /app/startup.sh && \
     touch /app/known_hosts && \
+    mkdir -p /app/keys && \
     chown -R uau:uau /app
 
 USER uau
 EXPOSE 8080
 
-ENV ENCRYPTION_KEY_FILE=/app/encryption.key \
+ENV ENCRYPTION_KEY_FILE=/app/keys/encryption.key \
     KNOWN_HOSTS_FILE=/app/known_hosts \
     MIGRATIONS_PATH=/app/migrations
 
