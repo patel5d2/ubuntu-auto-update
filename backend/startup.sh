@@ -7,7 +7,8 @@ set -eu
 
 # Generate a 32-byte AES-GCM key on first start if none is mounted.
 # Re-deploys preserve the key by mounting it as a volume / secret.
-if [ ! -s "${ENCRYPTION_KEY_FILE}" ]; then
+if [ ! -f "${ENCRYPTION_KEY_FILE}" ] || [ ! -s "${ENCRYPTION_KEY_FILE}" ]; then
+  mkdir -p "$(dirname "${ENCRYPTION_KEY_FILE}")"
   echo "[startup] generating new encryption key at ${ENCRYPTION_KEY_FILE}"
   head -c 32 /dev/urandom > "${ENCRYPTION_KEY_FILE}"
   chmod 0600 "${ENCRYPTION_KEY_FILE}"
