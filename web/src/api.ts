@@ -144,5 +144,7 @@ export function canDoAdmin(): boolean {
 }
 
 export function createWebSocket(endpoint: string): WebSocket {
-  return new WebSocket(`${getWsBaseUrl()}${endpoint}`);
+  const token = localStorage.getItem('auth_token') || '';
+  const separator = endpoint.includes('?') ? '&' : '?';
+  return new WebSocket(`${getWsBaseUrl()}${endpoint}${separator}token=${encodeURIComponent(token)}`);
 }

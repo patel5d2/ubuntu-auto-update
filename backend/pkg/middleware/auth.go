@@ -216,11 +216,18 @@ func RoleMiddleware(requiredRole string) func(http.Handler) http.Handler {
 // extractToken pulls a token out of either the auth cookie or an
 // Authorization: Bearer header. Returns "" if neither is present.
 func extractToken(r *http.Request, cookieName string) string {
-	if cookie, err := r.Cookie(cookieName); err == nil && cookie.Value != "" {
-		return cookie.Value
-	}
 	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
 		return strings.TrimPrefix(h, "Bearer ")
+	}
+	// CSWSH defense: WebSockets ignore cookies and require the token in the query
+	// string. The browser's WebSocket API doesn't allow setting custom headers,
+	// but an attacker exploiting a crafted page can't guess the token to put it
+	// in the URL.
+	if strings.ToLower(r.Header.Get("Upgrade")) == "websocket" {
+		return r.URL.Query().Get("token")
+	}
+	if cookie, err := r.Cookie(cookieName); err == nil && cookie.Value != "" {
+		return cookie.Value
 	}
 	return ""
 }

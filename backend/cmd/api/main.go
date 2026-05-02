@@ -648,7 +648,7 @@ func (app *Application) handleCreateHost(w http.ResponseWriter, r *http.Request)
 			log.Errorf("Auto-enroll rollback for host %d failed: %v (original: %v)", host.ID, delErr, bootstrapErr)
 		}
 		log.Warnf("Auto-enroll failed for %s: %v", req.Hostname, bootstrapErr)
-		writeJSONError(w, http.StatusBadGateway, "Auto-enrollment failed: "+bootstrapErr.Error())
+		writeJSONError(w, http.StatusBadGateway, "Auto-enrollment failed. Please check host credentials and network.")
 		return
 	}
 
@@ -944,7 +944,8 @@ func (app *Application) handleAddSSHKey(w http.ResponseWriter, r *http.Request) 
 	// PEM blobs are a common operator-paste error and the worst time to find
 	// out is when the next SSH dial silently fails.
 	if _, parseErr := ssh.ParsePrivateKey([]byte(req.PrivateKey)); parseErr != nil {
-		writeJSONError(w, http.StatusBadRequest, "private_key does not parse as an OpenSSH key: "+parseErr.Error())
+		log.Warnf("Failed to parse private key for host %d: %v", id, parseErr)
+		writeJSONError(w, http.StatusBadRequest, "private_key does not parse as a valid OpenSSH private key")
 		return
 	}
 

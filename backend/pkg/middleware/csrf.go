@@ -45,7 +45,7 @@ func SetCSRFCookie(w http.ResponseWriter, token string) {
 		Path:     "/",
 		HttpOnly: false,
 		Secure:   isProduction(),
-		SameSite: http.SameSiteLaxMode,
+		SameSite: http.SameSiteStrictMode,
 		MaxAge:   86400,
 	})
 }
