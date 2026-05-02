@@ -234,7 +234,7 @@ func main() {
 	viewer.HandleFunc("/hosts/{id}/runs", app.handleListRuns).Methods(http.MethodGet)
 	viewer.HandleFunc("/runs", app.handleListRunsByGroup).Methods(http.MethodGet)
 	viewer.HandleFunc("/runs/{id}", app.handleGetRun).Methods(http.MethodGet)
-	viewer.HandleFunc("/events", events.Handler(broker, app.wsUpgrader())).Methods(http.MethodGet)
+	viewer.HandleFunc("/events", events.Handler(broker, app.wsUpgrader(), app.Sessions)).Methods(http.MethodGet)
 	viewer.HandleFunc("/me", app.handleMe).Methods(http.MethodGet)
 
 	// State-changing operations — operator+.

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/patel5d2/ubuntu-auto-update/backend/pkg/session"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -27,7 +28,7 @@ const (
 // broker emits; client-side filtering decides what each component cares
 // about. Server-side filtering would mean per-user authorization checks,
 // which we skip in the single-admin model.
-func Handler(broker *Broker, upgrader websocket.Upgrader) http.HandlerFunc {
+func Handler(broker *Broker, upgrader websocket.Upgrader, store session.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -71,6 +72,8 @@ func Handler(broker *Broker, upgrader websocket.Upgrader) http.HandlerFunc {
 		ticker := time.NewTicker(pingPeriod)
 		defer ticker.Stop()
 
+		token := r.URL.Query().Get("token")
+
 		for {
 			select {
 			case <-ctx.Done():
@@ -82,6 +85,15 @@ func Handler(broker *Broker, upgrader websocket.Upgrader) http.HandlerFunc {
 				}
 
 			case <-ticker.C:
+				// Re-validate session to ensure a revoked/expired token
+				// drops the long-lived WebSocket.
+				if store != nil && token != "" {
+					if _, valid, _ := store.Validate(r.Context(), token); !valid {
+						conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "Session expired"))
+						return
+					}
+				}
+
 				conn.SetWriteDeadline(time.Now().Add(writeWait))
 				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 					return
