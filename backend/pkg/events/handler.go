@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/patel5d2/ubuntu-auto-update/backend/pkg/session"
+	"ubuntu-auto-update/backend/pkg/session"
 	log "github.com/sirupsen/logrus"
 )
 
