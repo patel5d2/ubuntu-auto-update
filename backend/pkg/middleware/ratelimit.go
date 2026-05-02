@@ -195,3 +195,19 @@ func envIsTrue(env string) bool {
 	v := strings.ToLower(os.Getenv(env))
 	return v == "1" || v == "true" || v == "yes"
 }
+
+// RateLimitHandler wraps a handler with per-IP rate limiting using the given
+// LoginRateLimiter. Useful for inline use on specific routes (e.g. /enroll)
+// without a full subrouter.
+func RateLimitHandler(limiter *LoginRateLimiter) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !limiter.Allow(ClientIP(r)) {
+				w.Header().Set("Retry-After", "60")
+				SendErrorResponse(w, http.StatusTooManyRequests, "rate_limit", "Too many requests; try again shortly", nil)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}

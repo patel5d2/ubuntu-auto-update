@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -14,6 +16,45 @@ import (
 // DefaultTimeout is the maximum time to wait for a webhook delivery
 const DefaultTimeout = 10 * time.Second
 
+// IsSafeURL validates that the target URL doesn't point to localhost, private networks,
+// or AWS metadata endpoints. Prevents Server-Side Request Forgery (SSRF).
+func IsSafeURL(target string) error {
+	u, err := url.Parse(target)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("unsupported scheme %q (must be http or https)", u.Scheme)
+	}
+	
+	// Resolve IP to check against private ranges
+	host := u.Hostname()
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return fmt.Errorf("could not resolve hostname: %w", err)
+	}
+	
+	for _, ip := range ips {
+		// Reject loopback (127.0.0.0/8, ::1)
+		if ip.IsLoopback() {
+			return fmt.Errorf("loopback addresses are not allowed")
+		}
+		// Reject private networks (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)
+		if ip.IsPrivate() {
+			return fmt.Errorf("private IP addresses are not allowed")
+		}
+		// Reject link-local (169.254.0.0/16) which hits AWS IMDS
+		if ip.IsLinkLocalUnicast() {
+			return fmt.Errorf("link-local addresses are not allowed")
+		}
+		// Reject unspecified (0.0.0.0)
+		if ip.IsUnspecified() {
+			return fmt.Errorf("unspecified addresses are not allowed")
+		}
+	}
+	return nil
+}
+
 // Send delivers a webhook payload to the specified URL with proper timeout and context.
 func Send(url string, payload interface{}) error {
 	return SendWithContext(context.Background(), url, payload)
@@ -21,6 +62,11 @@ func Send(url string, payload interface{}) error {
 
 // SendWithContext delivers a webhook payload with context support for cancellation.
 func SendWithContext(ctx context.Context, url string, payload interface{}) error {
+	if err := IsSafeURL(url); err != nil {
+		log.Warnf("Refused to send webhook to %s: %v", url, err)
+		return fmt.Errorf("unsafe webhook URL: %w", err)
+	}
+
 	jsonPayload, err := json.Marshal(payload)
 	if err != nil {
 		log.Errorf("Failed to marshal webhook payload: %v", err)

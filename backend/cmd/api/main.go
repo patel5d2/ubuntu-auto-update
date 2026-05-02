@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -197,14 +198,20 @@ func main() {
 	go events.NewListener(dbPool, broker).Run(listenerCtx)
 
 	r := mux.NewRouter()
-	r.Use(middleware.ErrorHandler) // panic recovery + request logging
+	r.Use(middleware.SecurityHeaders)   // defense-in-depth HTTP headers
+	r.Use(middleware.ErrorHandler)      // panic recovery + request logging
 	r.Use(middleware.CORS(corsCfg))
 	if allowlist != nil {
 		r.Use(middleware.IPAllowlistMiddleware(allowlist))
 	}
 
+	// Enrollment: rate-limit to prevent token brute-force. Shared limiter
+	// with login is fine — same 5 req/min per IP budget.
+	enrollLimiter := middleware.NewLoginRateLimiter()
+	middleware.StartLoginLimiterCleanup(cleanupCtx, enrollLimiter, 10*time.Minute, time.Hour)
+
 	r.HandleFunc("/api/v1/health", app.handleHealth).Methods(http.MethodGet)
-	r.HandleFunc("/api/v1/enroll", app.handleEnroll).Methods(http.MethodPost)
+	r.Handle("/api/v1/enroll", middleware.RateLimitHandler(enrollLimiter)(http.HandlerFunc(app.handleEnroll))).Methods(http.MethodPost)
 	r.HandleFunc("/api/v1/login", app.handleLogin).Methods(http.MethodPost, http.MethodOptions)
 	r.HandleFunc("/api/v1/logout", app.handleLogout).Methods(http.MethodPost, http.MethodOptions)
 
@@ -344,9 +351,11 @@ func (app *Application) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	// the legacy in-memory store when DB isn't wired (tests).
 	var authToken string
 	if app.Sessions != nil {
+		// Agent sessions: 90 days (was 365). Shorter lifetime limits blast
+		// radius if an agent token is compromised. Agents re-enroll on expiry.
 		t, err := app.Sessions.Create(r.Context(),
 			session.Principal{AgentLabel: req.Hostname, Username: "agent:" + req.Hostname, Role: session.RoleAgent},
-			365*24*time.Hour, middleware.ClientIP(r), r.UserAgent())
+			90*24*time.Hour, middleware.ClientIP(r), r.UserAgent())
 		if err != nil {
 			log.Errorf("Failed to create agent session: %v", err)
 			writeJSONError(w, http.StatusInternalServerError, "Failed to generate token")
@@ -977,15 +986,34 @@ func (app *Application) handleExecuteScript(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Audit every script execution. The script body itself can be unbounded;
-	// we cap what we record so a paste of a 10MB binary doesn't bloat the log.
+	// we cap what we record so a paste of a 10MB binary doesn't bloat the log,
+	// but we hash the full body for non-repudiation.
 	scriptStr := string(script)
+	
+	// Add a reasonable hard limit so malicious clients can't OOM the server or
+	// the SSH session (typically limited to 256KB or so depending on sshd_config).
+	const maxScriptBytes = 128 * 1024 // 128 KB
+	if len(scriptStr) > maxScriptBytes {
+		log.Errorf("Script exceeded maximum size: %d bytes", len(scriptStr))
+		conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("Error: Script exceeds maximum size of %d bytes", maxScriptBytes)))
+		return
+	}
+
 	preview := scriptStr
 	const maxAuditedScript = 4096
 	if len(preview) > maxAuditedScript {
 		preview = preview[:maxAuditedScript] + "…(truncated)"
 	}
+	
+	hash := sha256.Sum256(script)
+	hashHex := hex.EncodeToString(hash[:])
+	
 	app.audit(r, audit.ActionRunScript, "host", strconv.FormatInt(int64(id), 10),
-		map[string]interface{}{"script_preview": preview, "script_bytes": len(scriptStr)})
+		map[string]interface{}{
+			"script_preview": preview, 
+			"script_bytes": len(scriptStr),
+			"script_sha256": hashHex,
+		})
 
 	sshClient, _, err := app.SSHDialer.ConnectToHost(r.Context(), id)
 	if err != nil {
@@ -1241,9 +1269,13 @@ func (app *Application) handleListRuns(w http.ResponseWriter, r *http.Request) {
 
 	limit := 50
 	if v := r.URL.Query().Get("limit"); v != "" {
-		if parsed, err := strconv.Atoi(v); err == nil {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
 			limit = parsed
 		}
+	}
+	// Cap to prevent memory exhaustion on malicious limit values.
+	if limit > 200 {
+		limit = 200
 	}
 
 	runs, err := db.ListRunsForHost(r.Context(), app.DB, id, limit)

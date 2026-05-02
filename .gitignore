@@ -23,6 +23,12 @@ yarn-error.log*
 *.env
 *.env.local
 
+# Secrets & keys — never commit these
+encryption.key
+known_hosts
+*.pem
+*.key
+
 # Temporary and test files
 *.txt
 *.tmp
