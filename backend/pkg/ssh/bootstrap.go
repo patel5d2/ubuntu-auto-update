@@ -186,23 +186,21 @@ chmod 600 "$HOME/.ssh/authorized_keys"
 		sudoersFile := "uau-" + sanitizeForFilename(sshUser)
 		sudoersContent := scopedSudoersBody(sshUser, scope)
 
-		// We pipe (password + "\n" + sudoersContent) into `sudo -S sh -c '<cmd>'`.
-		// sudo -S reads the password from the first line of stdin, strips it,
-		// and forwards the rest to the child process. The child reads from
-		// the same stdin via cat redirection. -p '' silences the prompt so
-		// stderr stays clean. visudo -cf guards against syntax errors that
-		// would otherwise lock root-via-sudo out of the box.
+		// We supply the password to sudo via stdin, but pass the sudoers content
+		// as a quoted string in the command. This prevents a bug where if sudo
+		// doesn't prompt for a password (e.g., auth is cached or already NOPASSWD),
+		// it doesn't consume the first line from stdin. If we piped both, the
+		// password would leak into the sudoers file and cause a syntax error.
+		// -p '' silences the prompt so stderr stays clean. visudo -cf guards
+		// against syntax errors that would lock root-via-sudo out of the box.
 		innerCmd := fmt.Sprintf(
-			"umask 077 && cat > /etc/sudoers.d/%s && chmod 0440 /etc/sudoers.d/%s && visudo -cf /etc/sudoers.d/%s",
-			sudoersFile, sudoersFile, sudoersFile,
+			"umask 077 && printf '%%s' %s > /etc/sudoers.d/%s && chmod 0440 /etc/sudoers.d/%s && visudo -cf /etc/sudoers.d/%s",
+			shellQuote(sudoersContent), sudoersFile, sudoersFile, sudoersFile,
 		)
 		cmd := fmt.Sprintf("sudo -S -p '' sh -c %s", shellQuote(innerCmd))
 
-		stdin := io.MultiReader(
-			strings.NewReader(password+"\n"),
-			strings.NewReader(sudoersContent),
-		)
-		if out, err := runCommand(client, cmd, stdin); err != nil {
+		// Provide only the password to stdin. If sudo reads it, great. If not, it's ignored.
+		if out, err := runCommand(client, cmd, strings.NewReader(password+"\n")); err != nil {
 			return BootstrapResult{}, fmt.Errorf("configure passwordless sudo: %w (output: %s)", err, trimTo(out, 400))
 		}
 		sudoConfigured = true
