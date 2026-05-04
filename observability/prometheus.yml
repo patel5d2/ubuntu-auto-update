@@ -1,0 +1,40 @@
+# Prometheus Configuration for Ubuntu Auto-Update
+# Scrape config: backend metrics + agent node_exporter targets.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+
+# Alerting rules (optional – uncomment when alertmanager is deployed)
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: ['alertmanager:9093']
+
+rule_files:
+  - /etc/prometheus/alerts.yaml
+
+scrape_configs:
+  # ── Go Backend Metrics ─────────────────────────────────────────────────────
+  - job_name: 'uau-backend'
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['backend:8080']
+        labels:
+          service: 'backend'
+          environment: 'dev'
+
+  # ── Prometheus self-monitoring ─────────────────────────────────────────────
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # ── Node Exporter (agent hosts) ────────────────────────────────────────────
+  # In production, use service discovery (consul, DNS, or file_sd_configs).
+  # For dev, add agent hosts here:
+  # - job_name: 'node-exporter'
+  #   file_sd_configs:
+  #     - files:
+  #         - /etc/prometheus/targets/agents.yaml
+  #       refresh_interval: 30s

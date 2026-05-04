@@ -1,0 +1,82 @@
+# Prometheus Alerting Rules for Ubuntu Auto-Update
+groups:
+  - name: uau-backend
+    rules:
+      # ── Backend health ──────────────────────────────────────────────────────
+      - alert: BackendDown
+        expr: up{job="uau-backend"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Backend is unreachable"
+          description: "The uau-backend target has been down for more than 2 minutes."
+
+      - alert: HighErrorRate
+        expr: |
+          (
+            sum(rate(uau_http_requests_total{code=~"5.."}[5m]))
+            /
+            sum(rate(uau_http_requests_total[5m]))
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Backend 5xx error rate > 5%"
+          description: "More than 5% of HTTP requests are returning server errors."
+
+      - alert: HighLatencyP99
+        expr: histogram_quantile(0.99, rate(uau_http_request_duration_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Backend P99 latency > 2s"
+          description: "The 99th percentile request latency has exceeded 2 seconds."
+
+  - name: uau-fleet
+    rules:
+      # ── Fleet health ────────────────────────────────────────────────────────
+      - alert: AgentUpdateFailures
+        expr: |
+          (
+            count(uau_agent_last_exit_code != 0)
+            /
+            count(uau_agent_last_exit_code)
+          ) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: ">5% of agents reporting failure"
+          description: "More than 5% of enrolled agents have a non-zero last exit code."
+
+      - alert: AgentStale
+        expr: (time() - uau_agent_last_run_timestamp) > 86400
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Agent has not reported in >24h"
+          description: "Agent {{ $labels.hostname }} last reported more than 24 hours ago."
+
+      - alert: RebootRequired
+        expr: uau_agent_reboot_required == 1
+        for: 1h
+        labels:
+          severity: info
+        annotations:
+          summary: "Host requires reboot"
+          description: "Host {{ $labels.hostname }} has pending reboot for over 1 hour."
+
+  - name: uau-database
+    rules:
+      - alert: DatabaseConnectionPoolExhausted
+        expr: uau_db_pool_idle_connections == 0 and uau_db_pool_total_connections >= uau_db_pool_max_connections
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Database connection pool exhausted"
+          description: "All database connections are in use with no idle connections available."
