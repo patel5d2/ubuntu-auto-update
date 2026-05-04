@@ -135,7 +135,9 @@ func TestHandleEnroll_Success(t *testing.T) {
 	}
 
 	var resp map[string]string
-	json.Unmarshal(rr.Body.Bytes(), &resp)
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
 	if resp["token"] == "" {
 		t.Error("expected non-empty token")
 	}

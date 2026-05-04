@@ -54,7 +54,9 @@ func TestSendNotFoundError(t *testing.T) {
 		t.Errorf("got %d, want 404", rr.Code)
 	}
 	var resp ErrorResponse
-	json.Unmarshal(rr.Body.Bytes(), &resp)
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
 	if resp.Message != "Host not found" {
 		t.Errorf("got %q, want 'Host not found'", resp.Message)
 	}

@@ -2,8 +2,7 @@ use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use hmac::{Hmac, Mac};
 use reqwest::{Certificate, Client, ClientBuilder, Response};
-use rustls::{Certificate as RustlsCertificate, PrivateKey};
-use rustls_pemfile::{certs, pkcs8_private_keys};
+
 use sha2::Sha256;
 use std::fs::File;
 use std::io::BufReader;

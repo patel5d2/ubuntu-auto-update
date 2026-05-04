@@ -43,9 +43,9 @@ func Handler(broker *Broker, upgrader websocket.Upgrader, store session.Store) h
 		// Pong handling — the client sends pongs in response to our pings,
 		// which extends the read deadline. Without this an idle client
 		// would be reaped after pongWait.
-		conn.SetReadDeadline(time.Now().Add(pongWait))
+		_ = conn.SetReadDeadline(time.Now().Add(pongWait))
 		conn.SetPongHandler(func(string) error {
-			conn.SetReadDeadline(time.Now().Add(pongWait))
+			_ = conn.SetReadDeadline(time.Now().Add(pongWait))
 			return nil
 		})
 
@@ -89,12 +89,12 @@ func Handler(broker *Broker, upgrader websocket.Upgrader, store session.Store) h
 				// drops the long-lived WebSocket.
 				if store != nil && token != "" {
 					if _, valid, _ := store.Validate(r.Context(), token); !valid {
-						conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "Session expired"))
+						_ = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "Session expired"))
 						return
 					}
 				}
 
-				conn.SetWriteDeadline(time.Now().Add(writeWait))
+				_ = conn.SetWriteDeadline(time.Now().Add(writeWait))
 				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 					return
 				}
@@ -108,6 +108,6 @@ func writeJSON(conn *websocket.Conn, ev Event) error {
 	if err != nil {
 		return err
 	}
-	conn.SetWriteDeadline(time.Now().Add(writeWait))
+	_ = conn.SetWriteDeadline(time.Now().Add(writeWait))
 	return conn.WriteMessage(websocket.TextMessage, data)
 }

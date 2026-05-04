@@ -16,6 +16,10 @@ import (
 // DefaultTimeout is the maximum time to wait for a webhook delivery
 const DefaultTimeout = 10 * time.Second
 
+// skipSSRFCheck is a test-only hook. When true, IsSafeURL is not called.
+// This is never set in production — only by webhook_test.go.
+var skipSSRFCheck bool
+
 // IsSafeURL validates that the target URL doesn't point to localhost, private networks,
 // or AWS metadata endpoints. Prevents Server-Side Request Forgery (SSRF).
 func IsSafeURL(target string) error {
@@ -62,9 +66,11 @@ func Send(url string, payload interface{}) error {
 
 // SendWithContext delivers a webhook payload with context support for cancellation.
 func SendWithContext(ctx context.Context, url string, payload interface{}) error {
-	if err := IsSafeURL(url); err != nil {
-		log.Warnf("Refused to send webhook to %s: %v", url, err)
-		return fmt.Errorf("unsafe webhook URL: %w", err)
+	if !skipSSRFCheck {
+		if err := IsSafeURL(url); err != nil {
+			log.Warnf("Refused to send webhook to %s: %v", url, err)
+			return fmt.Errorf("unsafe webhook URL: %w", err)
+		}
 	}
 
 	jsonPayload, err := json.Marshal(payload)

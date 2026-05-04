@@ -383,7 +383,7 @@ func (app *Application) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		map[string]interface{}{"hostname": req.Hostname})
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"token": authToken})
+	_ = json.NewEncoder(w).Encode(map[string]string{"token": authToken})
 }
 
 func (app *Application) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -1002,7 +1002,7 @@ func (app *Application) handleExecuteScript(w http.ResponseWriter, r *http.Reque
 	const maxScriptBytes = 128 * 1024 // 128 KB
 	if len(scriptStr) > maxScriptBytes {
 		log.Errorf("Script exceeded maximum size: %d bytes", len(scriptStr))
-		conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("Error: Script exceeds maximum size of %d bytes", maxScriptBytes)))
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("Error: Script exceeds maximum size of %d bytes", maxScriptBytes)))
 		return
 	}
 
@@ -1025,7 +1025,7 @@ func (app *Application) handleExecuteScript(w http.ResponseWriter, r *http.Reque
 	sshClient, _, err := app.SSHDialer.ConnectToHost(r.Context(), id)
 	if err != nil {
 		log.Errorf("SSH connect to host %d failed: %v", id, err)
-		conn.WriteMessage(websocket.TextMessage, []byte("SSH connect failed: "+err.Error()))
+		_ = conn.WriteMessage(websocket.TextMessage, []byte("SSH connect failed: "+err.Error()))
 		return
 	}
 	defer sshClient.Close()

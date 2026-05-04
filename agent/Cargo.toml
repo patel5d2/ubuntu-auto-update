@@ -11,7 +11,7 @@ repository = "https://github.com/patel5d2/ubuntu-auto-update"
 tokio = { version = "1", features = ["full", "macros", "rt-multi-thread"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 clap = { version = "4.0", features = ["derive", "env"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
@@ -22,12 +22,10 @@ anyhow = "1.0"
 sha2 = "0.10"
 hmac = "0.12"
 base64 = "0.22"
-rustls = { version = "0.21", features = ["dangerous_configuration"] }
-rustls-pemfile = "1.0"
-tokio-rustls = "0.24"
+
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
-prometheus = { version = "0.13", features = ["process"] }
+prometheus = { version = "0.14", features = ["process"] }
 sqlite = "0.32"
 aes-gcm = "0.10"
 rand = "0.8"

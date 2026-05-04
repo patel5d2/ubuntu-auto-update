@@ -172,7 +172,7 @@ func (app *Application) handleBulkEnroll(w http.ResponseWriter, r *http.Request)
 	} else {
 		w.WriteHeader(http.StatusMultiStatus)
 	}
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"results":         results,
 		"success_count":   success,
 		"failure_count":   failure,
@@ -227,5 +227,5 @@ func (app *Application) handleRotateKey(w http.ResponseWriter, r *http.Request) 
 	if rotErr != nil {
 		resp["warning"] = rotErr.Error()
 	}
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }

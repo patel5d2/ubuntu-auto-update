@@ -11,7 +11,9 @@ func setupTestKey(t *testing.T) func() {
 	key := []byte("0123456789abcdef0123456789abcdef")
 	tmpDir := t.TempDir()
 	keyFile := filepath.Join(tmpDir, "encryption.key")
-	os.WriteFile(keyFile, key, 0600)
+	if err := os.WriteFile(keyFile, key, 0600); err != nil {
+		t.Fatalf("failed to write test key: %v", err)
+	}
 	old := os.Getenv("ENCRYPTION_KEY_FILE")
 	oldEnv := os.Getenv("ENCRYPTION_KEY")
 	os.Unsetenv("ENCRYPTION_KEY")
@@ -103,7 +105,9 @@ func TestEncrypt_MissingKeyFile(t *testing.T) {
 func TestEncrypt_InvalidKeySize(t *testing.T) {
 	tmpDir := t.TempDir()
 	kf := filepath.Join(tmpDir, "bad.key")
-	os.WriteFile(kf, []byte("short"), 0600)
+	if err := os.WriteFile(kf, []byte("short"), 0600); err != nil {
+		t.Fatalf("failed to write test key: %v", err)
+	}
 	os.Unsetenv("ENCRYPTION_KEY")
 	os.Setenv("ENCRYPTION_KEY_FILE", kf)
 	resetKeyCacheForTest()
