@@ -28,6 +28,8 @@ import (
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/crypto/ssh"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"ubuntu-auto-update/backend/pkg/audit"
 	"ubuntu-auto-update/backend/pkg/config"
 	"ubuntu-auto-update/backend/pkg/db"
@@ -199,8 +201,9 @@ func main() {
 	go events.NewListener(dbPool, broker).Run(listenerCtx)
 
 	r := mux.NewRouter()
-	r.Use(middleware.SecurityHeaders)   // defense-in-depth HTTP headers
-	r.Use(middleware.ErrorHandler)      // panic recovery + request logging
+	r.Use(middleware.PrometheusMiddleware) // request metrics (must be first)
+	r.Use(middleware.SecurityHeaders)      // defense-in-depth HTTP headers
+	r.Use(middleware.ErrorHandler)         // panic recovery + request logging
 	r.Use(middleware.CORS(corsCfg))
 	if allowlist != nil {
 		r.Use(middleware.IPAllowlistMiddleware(allowlist))
@@ -211,6 +214,8 @@ func main() {
 	enrollLimiter := middleware.NewLoginRateLimiter()
 	middleware.StartLoginLimiterCleanup(cleanupCtx, enrollLimiter, 10*time.Minute, time.Hour)
 
+	// Prometheus metrics endpoint.
+	r.Handle("/metrics", promhttp.Handler()).Methods(http.MethodGet)
 	r.HandleFunc("/api/v1/health", app.handleHealth).Methods(http.MethodGet)
 	r.Handle("/api/v1/enroll", middleware.RateLimitHandler(enrollLimiter)(http.HandlerFunc(app.handleEnroll))).Methods(http.MethodPost)
 	r.HandleFunc("/api/v1/login", app.handleLogin).Methods(http.MethodPost, http.MethodOptions)

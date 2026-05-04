@@ -1,0 +1,75 @@
+# AppArmor profile for the Ubuntu Auto-Update Agent
+# Install: sudo cp ubuntu-auto-update-agent /etc/apparmor.d/
+#          sudo apparmor_parser -r /etc/apparmor.d/ubuntu-auto-update-agent
+
+#include <tunables/global>
+
+profile ubuntu-auto-update-agent /usr/local/bin/ua-agent flags=(enforce) {
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+
+  # ── Binary ──────────────────────────────────────────────────────────────
+  /usr/local/bin/ua-agent mr,
+
+  # ── Configuration (read-only except auth token which is written on enroll) ─
+  /etc/ubuntu-auto-update/ r,
+  /etc/ubuntu-auto-update/** r,
+  /etc/ubuntu-auto-update/auth.token rw,
+  /etc/ubuntu-auto-update/host.id rw,
+  /etc/ubuntu-auto-update/enrollment.token r,
+
+  # ── Logging ─────────────────────────────────────────────────────────────
+  /var/log/ubuntu-auto-update/ rw,
+  /var/log/ubuntu-auto-update/** rw,
+
+  # ── Metrics ─────────────────────────────────────────────────────────────
+  /var/lib/node_exporter/textfile_collector/ rw,
+  /var/lib/node_exporter/textfile_collector/** rw,
+
+  # ── APT operations ──────────────────────────────────────────────────────
+  /usr/bin/apt-get ix,
+  /usr/bin/apt ix,
+  /usr/bin/dpkg ix,
+  /usr/bin/dpkg-query ix,
+  /var/cache/apt/** rw,
+  /var/lib/apt/** rw,
+  /var/lib/dpkg/** rw,
+  /etc/apt/** r,
+
+  # ── Snap operations (optional) ──────────────────────────────────────────
+  /usr/bin/snap ix,
+
+  # ── System information ──────────────────────────────────────────────────
+  /usr/bin/lsb_release ix,
+  /usr/bin/uname ix,
+  /proc/uptime r,
+  /proc/meminfo r,
+  /proc/loadavg r,
+  /proc/stat r,
+  /proc/sys/kernel/hostname r,
+
+  # ── Reboot scheduling ──────────────────────────────────────────────────
+  /usr/sbin/shutdown ix,
+  /sbin/shutdown ix,
+
+  # ── Network access (for backend communication) ─────────────────────────
+  network inet stream,
+  network inet6 stream,
+  network inet dgram,
+  network inet6 dgram,
+
+  # ── TLS certificates ───────────────────────────────────────────────────
+  /etc/ssl/certs/** r,
+  /etc/pki/tls/certs/** r,
+  /usr/share/ca-certificates/** r,
+
+  # ── Temporary files ────────────────────────────────────────────────────
+  /tmp/ r,
+  owner /tmp/** rw,
+
+  # ── Deny everything else ───────────────────────────────────────────────
+  deny /home/** rwx,
+  deny /root/** rwx,
+  deny /etc/shadow r,
+  deny /etc/gshadow r,
+}

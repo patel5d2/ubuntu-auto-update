@@ -1,0 +1,212 @@
+name: CI Pipeline
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: '1.23'
+  RUST_TOOLCHAIN: 'stable'
+  NODE_VERSION: '20'
+
+jobs:
+  # ── Go Backend ────────────────────────────────────────────────────────────
+  go-lint:
+    name: Go Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          working-directory: backend
+          version: latest
+      - name: go vet
+        run: go vet ./...
+        working-directory: backend
+      - name: staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          staticcheck ./...
+        working-directory: backend
+
+  go-test:
+    name: Go Test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test_db
+        ports: ['5432:5432']
+        options: --health-cmd "pg_isready -U test" --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Run tests
+        working-directory: backend
+        env:
+          DATABASE_URL: postgres://test:test@localhost:5432/test_db?sslmode=disable
+        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-coverage
+          path: backend/coverage.out
+
+  go-security:
+    name: Go Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+        working-directory: backend
+      - name: gosec
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          gosec -exclude=G104 ./...
+        working-directory: backend
+
+  # ── Rust Agent ────────────────────────────────────────────────────────────
+  rust-lint:
+    name: Rust Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: cargo fmt
+        run: cargo fmt --check
+        working-directory: agent
+      - name: cargo clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+        working-directory: agent
+
+  rust-test:
+    name: Rust Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo test
+        run: cargo test --all-features
+        working-directory: agent
+      - name: cargo audit
+        run: |
+          cargo install cargo-audit
+          cargo audit
+        working-directory: agent
+
+  # ── Web Frontend ──────────────────────────────────────────────────────────
+  web-lint-test:
+    name: Web Lint & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+        working-directory: web
+      - name: TypeScript check
+        run: npx tsc --noEmit
+        working-directory: web
+      - name: Run tests
+        run: npm test
+        working-directory: web
+      - name: Build check
+        run: npm run build
+        working-directory: web
+
+  # ── Container Build & Scan ────────────────────────────────────────────────
+  docker-build:
+    name: Docker Build & Scan
+    runs-on: ubuntu-latest
+    needs: [go-test, rust-test, web-lint-test]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: uau:ci-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: uau:ci-${{ github.sha }}
+          format: table
+          exit-code: '1'
+          severity: CRITICAL,HIGH
+
+  # ── Integration Smoke Test ────────────────────────────────────────────────
+  integration:
+    name: Integration Smoke Test
+    runs-on: ubuntu-latest
+    needs: [docker-build]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start services
+        run: docker compose -f docker-compose.dev.yml up -d --build --wait
+        timeout-minutes: 5
+      - name: Health check
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/api/v1/health; then
+              echo "Backend healthy"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Backend failed to start"
+          docker compose -f docker-compose.dev.yml logs backend
+          exit 1
+      - name: Basic API test
+        run: |
+          # Login
+          TOKEN=$(curl -sf -X POST http://localhost:8080/api/v1/login \
+            -H 'Content-Type: application/json' \
+            -d '{"username":"admin","password":"change-me-please"}' | jq -r .token)
+
+          # List hosts (should return empty array)
+          STATUS=$(curl -sf -o /dev/null -w '%{http_code}' \
+            http://localhost:8080/api/v1/hosts \
+            -H "Authorization: Bearer $TOKEN")
+          if [ "$STATUS" != "200" ]; then
+            echo "Expected 200, got $STATUS"
+            exit 1
+          fi
+
+          # Metrics endpoint
+          curl -sf http://localhost:8080/metrics | grep uau_http_requests_total
+          echo "All smoke tests passed"
+      - name: Teardown
+        if: always()
+        run: docker compose -f docker-compose.dev.yml down -v

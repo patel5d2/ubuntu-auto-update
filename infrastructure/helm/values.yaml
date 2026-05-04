@@ -1,0 +1,106 @@
+# Default values for ubuntu-auto-update Helm chart.
+
+replicaCount: 2
+
+image:
+  repository: ghcr.io/patel5d2/ubuntu-auto-update
+  pullPolicy: IfNotPresent
+  tag: ""  # Defaults to chart appVersion
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# ── Backend Configuration ─────────────────────────────────────────────────
+backend:
+  port: 8080
+  env:
+    ENVIRONMENT: production
+    LOG_LEVEL: info
+    API_PORT: "8080"
+  # Secrets reference — create a K8s Secret with these keys:
+  secretName: uau-secrets
+  # Expected keys in secret:
+  #   DATABASE_URL, ADMIN_USERNAME, ADMIN_PASSWORD, ENROLLMENT_TOKEN,
+  #   ENCRYPTION_KEY, LICENSE_PUBLIC_KEY (optional)
+
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# ── Service ───────────────────────────────────────────────────────────────
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+# ── Ingress ───────────────────────────────────────────────────────────────
+ingress:
+  enabled: false
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+  hosts:
+    - host: uau.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: uau-tls
+      hosts:
+        - uau.example.com
+
+# ── PostgreSQL sub-chart ──────────────────────────────────────────────────
+postgresql:
+  enabled: true
+  auth:
+    postgresPassword: changeme
+    database: uau_db
+  primary:
+    persistence:
+      size: 10Gi
+    resources:
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+# ── Redis sub-chart ───────────────────────────────────────────────────────
+redis:
+  enabled: false
+  architecture: standalone
+  auth:
+    enabled: false
+
+# ── Monitoring ────────────────────────────────────────────────────────────
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: false
+    interval: 15s
+    path: /metrics
+
+# ── Pod disruption budget ────────────────────────────────────────────────
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}

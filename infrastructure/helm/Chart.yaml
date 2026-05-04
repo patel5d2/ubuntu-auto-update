@@ -1,0 +1,23 @@
+apiVersion: v2
+name: ubuntu-auto-update
+description: Enterprise Ubuntu Auto-Update Platform
+type: application
+version: 0.2.0
+appVersion: "0.2.0"
+home: https://github.com/patel5d2/ubuntu-auto-update
+maintainers:
+  - name: Dharmin Patel
+keywords:
+  - ubuntu
+  - auto-update
+  - fleet-management
+  - apt
+dependencies:
+  - name: postgresql
+    version: "~15.0"
+    repository: https://charts.bitnami.com/bitnami
+    condition: postgresql.enabled
+  - name: redis
+    version: "~18.0"
+    repository: https://charts.bitnami.com/bitnami
+    condition: redis.enabled
