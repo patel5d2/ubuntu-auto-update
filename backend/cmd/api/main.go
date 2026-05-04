@@ -375,7 +375,7 @@ func (app *Application) handleEnroll(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		authToken = t
-		app.TokenStore.StoreTokenWithRole(authToken, "agent:"+req.Hostname, session.RoleAgent, 365*24*time.Hour)
+		app.TokenStore.StoreTokenWithRole(authToken, "agent:"+req.Hostname, session.RoleAgent, 90*24*time.Hour)
 	}
 
 	log.Infof("Agent enrolled successfully: %s", req.Hostname)
