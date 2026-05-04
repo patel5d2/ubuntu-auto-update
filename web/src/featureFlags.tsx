@@ -10,7 +10,7 @@
 //   if (hasFeature('advanced_viz')) { ... }
 
 import { useState, useEffect, useCallback, createContext, useContext } from 'react';
-import { api } from './api';
+import { apiGet } from './api';
 
 // Mirrors backend/pkg/licensing Feature constants.
 export type Feature =
@@ -62,15 +62,9 @@ export function FeatureProvider({ children }: { children: React.ReactNode }) {
   const refresh = useCallback(async () => {
     try {
       setIsLoading(true);
-      const resp = await api.get('/api/v1/license');
-      if (resp.ok) {
-        const data: LicenseInfo = await resp.json();
-        setLicense(data);
-        setError(null);
-      } else {
-        // No license endpoint = free tier; not an error.
-        setLicense({ valid: false, features: [], error: 'No license' });
-      }
+      const data = await apiGet<LicenseInfo>('/api/v1/license');
+      setLicense(data);
+      setError(null);
     } catch {
       // Backend might not have the endpoint yet — degrade gracefully.
       setLicense({ valid: false, features: [], error: 'Unavailable' });
