@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"ubuntu-auto-update/backend/pkg/models"
 )
 
@@ -19,13 +18,13 @@ const MaxRunOutputBytes = 1 << 20 // 1 MiB
 
 // CreateRun inserts a new update_runs row in 'running' state and returns
 // the generated id.
-func CreateRun(ctx context.Context, db *pgxpool.Pool, hostID int32, triggeredBy string, kind models.RunKind) (models.UpdateRun, error) {
+func CreateRun(ctx context.Context, db DBTX, hostID int32, triggeredBy string, kind models.RunKind) (models.UpdateRun, error) {
 	return CreateRunWithGroup(ctx, db, hostID, triggeredBy, kind, "")
 }
 
 // CreateRunWithGroup is the bulk-aware variant of CreateRun. Pass groupID =
 // "" for single-host runs.
-func CreateRunWithGroup(ctx context.Context, db *pgxpool.Pool, hostID int32, triggeredBy string, kind models.RunKind, groupID string) (models.UpdateRun, error) {
+func CreateRunWithGroup(ctx context.Context, db DBTX, hostID int32, triggeredBy string, kind models.RunKind, groupID string) (models.UpdateRun, error) {
 	var groupArg interface{}
 	if groupID != "" {
 		groupArg = groupID
@@ -43,7 +42,7 @@ func CreateRunWithGroup(ctx context.Context, db *pgxpool.Pool, hostID int32, tri
 
 // ListRunsForGroup returns every run that belongs to a bulk run_group_id,
 // ordered by host_id so the UI can render a stable per-host accordion.
-func ListRunsForGroup(ctx context.Context, db *pgxpool.Pool, groupID string) ([]models.UpdateRun, error) {
+func ListRunsForGroup(ctx context.Context, db DBTX, groupID string) ([]models.UpdateRun, error) {
 	rows, err := db.Query(ctx, `
 		SELECT `+runColumns+`
 		FROM update_runs
@@ -66,7 +65,7 @@ func ListRunsForGroup(ctx context.Context, db *pgxpool.Pool, groupID string) ([]
 // AppendRunOutput appends a chunk of output to an existing run, capped at
 // MaxRunOutputBytes. Returns true iff this write fit fully within the cap;
 // callers can use that to decide whether to keep buffering.
-func AppendRunOutput(ctx context.Context, db *pgxpool.Pool, runID int32, chunk string) (bool, error) {
+func AppendRunOutput(ctx context.Context, db DBTX, runID int32, chunk string) (bool, error) {
 	if chunk == "" {
 		return true, nil
 	}
@@ -84,7 +83,7 @@ func AppendRunOutput(ctx context.Context, db *pgxpool.Pool, runID int32, chunk s
 
 // FinishRun marks a run terminal. exitCode is recorded when known; pass -1
 // to leave it null (e.g. for failures before the SSH command ran).
-func FinishRun(ctx context.Context, db *pgxpool.Pool, runID int32, status models.RunStatus, exitCode int, errMsg string) error {
+func FinishRun(ctx context.Context, db DBTX, runID int32, status models.RunStatus, exitCode int, errMsg string) error {
 	var exit sql.NullInt32
 	if exitCode >= 0 {
 		exit = sql.NullInt32{Int32: int32(exitCode), Valid: true}
@@ -109,7 +108,7 @@ func FinishRun(ctx context.Context, db *pgxpool.Pool, runID int32, status models
 
 // ListRunsForHost returns runs for a host newest-first. limit is hard-capped
 // at 100 to keep the response bounded.
-func ListRunsForHost(ctx context.Context, db *pgxpool.Pool, hostID int32, limit int) ([]models.UpdateRun, error) {
+func ListRunsForHost(ctx context.Context, db DBTX, hostID int32, limit int) ([]models.UpdateRun, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
@@ -135,7 +134,7 @@ func ListRunsForHost(ctx context.Context, db *pgxpool.Pool, hostID int32, limit 
 
 // GetRun fetches a single run by id. Returns pgx.ErrNoRows if it doesn't
 // exist.
-func GetRun(ctx context.Context, db *pgxpool.Pool, id int32) (models.UpdateRun, error) {
+func GetRun(ctx context.Context, db DBTX, id int32) (models.UpdateRun, error) {
 	rows, err := db.Query(ctx, `SELECT `+runColumns+` FROM update_runs WHERE id = $1`, id)
 	if err != nil {
 		return models.UpdateRun{}, err

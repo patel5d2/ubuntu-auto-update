@@ -18,6 +18,14 @@ import (
 // on hostname (Postgres error 23505).
 var ErrDuplicateHostname = errors.New("hostname already exists")
 
+// DBTX is an interface covering pgxpool.Pool methods used in this package.
+type DBTX interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Begin(ctx context.Context) (pgx.Tx, error)
+}
+
 const hostColumns = `id, hostname, ssh_user, created_at, updated_at, last_seen, update_output, upgrade_output, error`
 
 func NewConnection(ctx context.Context) (*pgxpool.Pool, error) {
@@ -32,7 +40,7 @@ func NewConnection(ctx context.Context) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
-func UpsertHost(ctx context.Context, db *pgxpool.Pool, hostname, sshUser, updateOutput, upgradeOutput, errorMsg string) (models.Host, error) {
+func UpsertHost(ctx context.Context, db DBTX, hostname, sshUser, updateOutput, upgradeOutput, errorMsg string) (models.Host, error) {
 	var hostError sql.NullString
 	if errorMsg != "" {
 		hostError = sql.NullString{String: errorMsg, Valid: true}
@@ -55,7 +63,7 @@ func UpsertHost(ctx context.Context, db *pgxpool.Pool, hostname, sshUser, update
 	return pgx.CollectExactlyOneRow(rows, pgx.RowToStructByName[models.Host])
 }
 
-func ListHosts(ctx context.Context, db *pgxpool.Pool) ([]models.Host, error) {
+func ListHosts(ctx context.Context, db DBTX) ([]models.Host, error) {
 	rows, err := db.Query(ctx, `SELECT `+hostColumns+` FROM hosts ORDER BY hostname`)
 	if err != nil {
 		return nil, err
@@ -76,7 +84,7 @@ func ListHosts(ctx context.Context, db *pgxpool.Pool) ([]models.Host, error) {
 //
 // pgx v5 may defer the underlying SQL error from Query() until row
 // collection runs, so we check both code paths.
-func CreateHost(ctx context.Context, db *pgxpool.Pool, hostname, sshUser string) (models.Host, error) {
+func CreateHost(ctx context.Context, db DBTX, hostname, sshUser string) (models.Host, error) {
 	rows, err := db.Query(ctx, `
 		INSERT INTO hosts (hostname, ssh_user, last_seen, update_output, upgrade_output)
 		VALUES ($1, $2, NOW(), '', '')
@@ -102,7 +110,7 @@ func mapInsertHostError(err error) error {
 
 // UpdateHostSSHUser updates only the ssh_user column. Returns pgx.ErrNoRows
 // if no row matches.
-func UpdateHostSSHUser(ctx context.Context, db *pgxpool.Pool, id int32, sshUser string) (models.Host, error) {
+func UpdateHostSSHUser(ctx context.Context, db DBTX, id int32, sshUser string) (models.Host, error) {
 	rows, err := db.Query(ctx, `
 		UPDATE hosts SET ssh_user = $2 WHERE id = $1
 		RETURNING `+hostColumns,
@@ -116,7 +124,7 @@ func UpdateHostSSHUser(ctx context.Context, db *pgxpool.Pool, id int32, sshUser 
 // DeleteHost removes the host row. ssh_keys is set to ON DELETE CASCADE in
 // the schema, so the encrypted key disappears with it. Returns the number
 // of rows affected so the handler can distinguish 404 from success.
-func DeleteHost(ctx context.Context, db *pgxpool.Pool, id int32) (int64, error) {
+func DeleteHost(ctx context.Context, db DBTX, id int32) (int64, error) {
 	tag, err := db.Exec(ctx, `DELETE FROM hosts WHERE id = $1`, id)
 	if err != nil {
 		return 0, err
@@ -124,7 +132,7 @@ func DeleteHost(ctx context.Context, db *pgxpool.Pool, id int32) (int64, error) 
 	return tag.RowsAffected(), nil
 }
 
-func GetHost(ctx context.Context, db *pgxpool.Pool, id int32) (models.Host, error) {
+func GetHost(ctx context.Context, db DBTX, id int32) (models.Host, error) {
 	rows, err := db.Query(ctx, `SELECT `+hostColumns+` FROM hosts WHERE id = $1`, id)
 	if err != nil {
 		return models.Host{}, err
@@ -132,7 +140,7 @@ func GetHost(ctx context.Context, db *pgxpool.Pool, id int32) (models.Host, erro
 	return pgx.CollectExactlyOneRow(rows, pgx.RowToStructByName[models.Host])
 }
 
-func GetSSHKey(ctx context.Context, db *pgxpool.Pool, hostID int32) (models.SSHKey, error) {
+func GetSSHKey(ctx context.Context, db DBTX, hostID int32) (models.SSHKey, error) {
 	rows, err := db.Query(ctx, `SELECT host_id, private_key FROM ssh_keys WHERE host_id = $1`, hostID)
 	if err != nil {
 		return models.SSHKey{}, err
@@ -150,7 +158,7 @@ func GetSSHKey(ctx context.Context, db *pgxpool.Pool, hostID int32) (models.SSHK
 	return key, nil
 }
 
-func AddSSHKey(ctx context.Context, db *pgxpool.Pool, hostID int32, privateKey string) error {
+func AddSSHKey(ctx context.Context, db DBTX, hostID int32, privateKey string) error {
 	encryptedKey, err := crypto.Encrypt(privateKey)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt SSH key: %w", err)
@@ -167,7 +175,7 @@ func AddSSHKey(ctx context.Context, db *pgxpool.Pool, hostID int32, privateKey s
 // SetSSHKeyAndUser stores the SSH key and updates the host's ssh_user in a
 // single transaction. The previous two-step path could leave the new key
 // paired with the old ssh_user if the second statement failed.
-func SetSSHKeyAndUser(ctx context.Context, db *pgxpool.Pool, hostID int32, sshUser, privateKey string) error {
+func SetSSHKeyAndUser(ctx context.Context, db DBTX, hostID int32, sshUser, privateKey string) error {
 	encryptedKey, err := crypto.Encrypt(privateKey)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt SSH key: %w", err)
@@ -200,7 +208,7 @@ func SetSSHKeyAndUser(ctx context.Context, db *pgxpool.Pool, hostID int32, sshUs
 	return tx.Commit(ctx)
 }
 
-func GetWebhooks(ctx context.Context, db *pgxpool.Pool, event string) ([]models.Webhook, error) {
+func GetWebhooks(ctx context.Context, db DBTX, event string) ([]models.Webhook, error) {
 	rows, err := db.Query(ctx, `SELECT id, url, event FROM webhooks WHERE event = $1`, event)
 	if err != nil {
 		return nil, err
