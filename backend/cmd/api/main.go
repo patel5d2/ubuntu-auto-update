@@ -978,6 +978,32 @@ func (app *Application) handleExecuteScript(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// C4: Explicitly validate the session token BEFORE upgrading to WebSocket.
+	// WebSocket upgrade is a plain GET which bypasses the CSRF middleware.
+	// Without this check, the route relies solely on the subrouter's cookie
+	// session, which is insufficient for arbitrary command execution.
+	token := r.URL.Query().Get("token")
+	if app.Sessions != nil {
+		if token == "" {
+			writeJSONError(w, http.StatusUnauthorized, "Missing token")
+			return
+		}
+		if _, valid, _ := app.Sessions.Validate(r.Context(), token); !valid {
+			writeJSONError(w, http.StatusUnauthorized, "Invalid or expired session")
+			return
+		}
+	} else {
+		// Legacy in-memory token store path (tests / no-DB mode).
+		if token == "" {
+			writeJSONError(w, http.StatusUnauthorized, "Missing token")
+			return
+		}
+		if _, valid := app.TokenStore.ValidateToken(token); !valid {
+			writeJSONError(w, http.StatusUnauthorized, "Invalid or expired session")
+			return
+		}
+	}
+
 	upgrader := app.wsUpgrader()
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
