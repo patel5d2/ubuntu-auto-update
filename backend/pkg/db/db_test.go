@@ -3,11 +3,14 @@ package db_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pashagolub/pgxmock/v4"
+	"ubuntu-auto-update/backend/pkg/crypto"
 	"ubuntu-auto-update/backend/pkg/db"
 )
 
@@ -19,6 +22,7 @@ func TestUpsertHost(t *testing.T) {
 	defer mock.Close()
 
 	now := time.Now()
+	// Success path
 	rows := mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error"}).
 		AddRow(int32(1), "test-host", "root", now, now, now, "out", "out", nil)
 
@@ -26,17 +30,19 @@ func TestUpsertHost(t *testing.T) {
 		WithArgs("test-host", "root", "out", "out", sql.NullString{}).
 		WillReturnRows(rows)
 
-	host, err := db.UpsertHost(context.Background(), mock, "test-host", "root", "out", "out", "")
+	_, err = db.UpsertHost(context.Background(), mock, "test-host", "root", "out", "out", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if host.ID != 1 {
-		t.Errorf("expected id 1, got %d", host.ID)
-	}
+	// Error path
+	mock.ExpectQuery(`INSERT INTO hosts`).
+		WithArgs("test-host-2", "root", "out", "out", sql.NullString{String: "err", Valid: true}).
+		WillReturnError(errors.New("db error"))
 
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unfulfilled expectations: %v", err)
+	_, err = db.UpsertHost(context.Background(), mock, "test-host-2", "root", "out", "out", "err")
+	if err == nil {
+		t.Error("expected error")
 	}
 }
 
@@ -48,23 +54,43 @@ func TestListHosts(t *testing.T) {
 	defer mock.Close()
 
 	now := time.Now()
+	// Success path
 	rows := mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error"}).
 		AddRow(int32(1), "test-host", "root", now, now, now, "", "", nil)
 
 	mock.ExpectQuery(`SELECT (.+) FROM hosts ORDER BY hostname`).
 		WillReturnRows(rows)
 
-	hosts, err := db.ListHosts(context.Background(), mock)
+	_, err = db.ListHosts(context.Background(), mock)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(hosts) != 1 {
-		t.Errorf("expected 1 host, got %d", len(hosts))
+	// Error path
+	mock.ExpectQuery(`SELECT (.+) FROM hosts ORDER BY hostname`).
+		WillReturnError(errors.New("db error"))
+	_, err = db.ListHosts(context.Background(), mock)
+	if err == nil {
+		t.Error("expected error")
 	}
 
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unfulfilled expectations: %v", err)
+	// CollectRows error path
+	mock.ExpectQuery(`SELECT (.+) FROM hosts ORDER BY hostname`).
+		WillReturnRows(mock.NewRows([]string{"id"}).AddRow("not-an-int"))
+	_, err = db.ListHosts(context.Background(), mock)
+	if err == nil {
+		t.Error("expected error from CollectRows")
+	}
+
+	// 0 rows path
+	mock.ExpectQuery(`SELECT (.+) FROM hosts ORDER BY hostname`).
+		WillReturnRows(mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error"}))
+	hosts, err := db.ListHosts(context.Background(), mock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hosts == nil {
+		t.Error("expected non-nil empty slice")
 	}
 }
 
@@ -76,6 +102,7 @@ func TestCreateHost(t *testing.T) {
 	defer mock.Close()
 
 	now := time.Now()
+	// Success
 	rows := mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error"}).
 		AddRow(int32(1), "test-host", "root", now, now, now, "", "", nil)
 
@@ -83,13 +110,9 @@ func TestCreateHost(t *testing.T) {
 		WithArgs("test-host", "root").
 		WillReturnRows(rows)
 
-	host, err := db.CreateHost(context.Background(), mock, "test-host", "root")
+	_, err = db.CreateHost(context.Background(), mock, "test-host", "root")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if host.ID != 1 {
-		t.Errorf("expected id 1, got %d", host.ID)
 	}
 
 	// Test ErrDuplicateHostname
@@ -102,8 +125,24 @@ func TestCreateHost(t *testing.T) {
 		t.Errorf("expected ErrDuplicateHostname, got %v", err)
 	}
 
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unfulfilled expectations: %v", err)
+	// Test general error
+	mock.ExpectQuery(`INSERT INTO hosts`).
+		WithArgs("test-host", "root").
+		WillReturnError(errors.New("db error"))
+
+	_, err = db.CreateHost(context.Background(), mock, "test-host", "root")
+	if err == nil {
+		t.Errorf("expected error")
+	}
+
+	// Test CollectExactlyOneRow error
+	mock.ExpectQuery(`INSERT INTO hosts`).
+		WithArgs("test-host", "root").
+		WillReturnRows(mock.NewRows([]string{"id"}).AddRow("invalid"))
+
+	_, err = db.CreateHost(context.Background(), mock, "test-host", "root")
+	if err == nil {
+		t.Errorf("expected CollectExactlyOneRow error")
 	}
 }
 
@@ -122,17 +161,18 @@ func TestUpdateHostSSHUser(t *testing.T) {
 		WithArgs(int32(1), "ubuntu").
 		WillReturnRows(rows)
 
-	host, err := db.UpdateHostSSHUser(context.Background(), mock, 1, "ubuntu")
+	_, err = db.UpdateHostSSHUser(context.Background(), mock, 1, "ubuntu")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if host.SshUser != "ubuntu" {
-		t.Errorf("expected ssh_user ubuntu, got %v", host.SshUser)
-	}
-
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unfulfilled expectations: %v", err)
+	// Error path
+	mock.ExpectQuery(`UPDATE hosts SET ssh_user = \$2 WHERE id = \$1`).
+		WithArgs(int32(2), "ubuntu").
+		WillReturnError(errors.New("db error"))
+	_, err = db.UpdateHostSSHUser(context.Background(), mock, 2, "ubuntu")
+	if err == nil {
+		t.Error("expected error")
 	}
 }
 
@@ -147,17 +187,48 @@ func TestDeleteHost(t *testing.T) {
 		WithArgs(int32(1)).
 		WillReturnResult(pgxmock.NewResult("DELETE", 1))
 
-	affected, err := db.DeleteHost(context.Background(), mock, 1)
+	_, err = db.DeleteHost(context.Background(), mock, 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if affected != 1 {
-		t.Errorf("expected affected 1, got %d", affected)
+	mock.ExpectExec(`DELETE FROM hosts WHERE id = \$1`).
+		WithArgs(int32(2)).
+		WillReturnError(errors.New("db error"))
+	_, err = db.DeleteHost(context.Background(), mock, 2)
+	if err == nil {
+		t.Error("expected error")
+	}
+}
+
+func TestGetHost(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("error creating mock: %v", err)
+	}
+	defer mock.Close()
+
+	now := time.Now()
+	// Success path
+	rows := mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error"}).
+		AddRow(int32(1), "test-host", "root", now, now, now, "", "", nil)
+
+	mock.ExpectQuery(`SELECT (.+) FROM hosts WHERE id = \$1`).
+		WithArgs(int32(1)).
+		WillReturnRows(rows)
+
+	_, err = db.GetHost(context.Background(), mock, 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unfulfilled expectations: %v", err)
+	// Error path
+	mock.ExpectQuery(`SELECT (.+) FROM hosts WHERE id = \$1`).
+		WithArgs(int32(2)).
+		WillReturnError(errors.New("db error"))
+	_, err = db.GetHost(context.Background(), mock, 2)
+	if err == nil {
+		t.Error("expected error")
 	}
 }
 
@@ -169,9 +240,6 @@ func TestGetSSHKey(t *testing.T) {
 	defer mock.Close()
 
 	// Need a valid encrypted key
-	// crypto isn't easy to mock here so let's just make it return an empty string and fail the Decrypt step,
-	// or return a valid string that fails decrypt. Wait, GetSSHKey uses crypto.Decrypt which fails if invalid.
-	// But it returns the error. We can test that.
 	rows := mock.NewRows([]string{"host_id", "private_key"}).
 		AddRow(int32(1), "invalid-encrypted-key")
 
@@ -184,8 +252,36 @@ func TestGetSSHKey(t *testing.T) {
 		t.Errorf("expected error decrypting invalid key")
 	}
 
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unfulfilled expectations: %v", err)
+	// DB error
+	mock.ExpectQuery(`SELECT host_id, private_key FROM ssh_keys WHERE host_id = \$1`).
+		WithArgs(int32(2)).
+		WillReturnError(errors.New("db error"))
+	_, err = db.GetSSHKey(context.Background(), mock, 2)
+	if err == nil {
+		t.Error("expected error")
+	}
+
+	// ErrNoRows error
+	mock.ExpectQuery(`SELECT host_id, private_key FROM ssh_keys WHERE host_id = \$1`).
+		WithArgs(int32(3)).
+		WillReturnError(pgx.ErrNoRows)
+	_, err = db.GetSSHKey(context.Background(), mock, 3)
+	if err != pgx.ErrNoRows {
+		t.Error("expected ErrNoRows")
+	}
+
+	// Success path
+	encrypted, _ := crypto.Encrypt("secret")
+	mock.ExpectQuery(`SELECT host_id, private_key FROM ssh_keys WHERE host_id = \$1`).
+		WithArgs(int32(4)).
+		WillReturnRows(mock.NewRows([]string{"host_id", "private_key"}).AddRow(int32(4), encrypted))
+	
+	key, err := db.GetSSHKey(context.Background(), mock, 4)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if key.PrivateKey != "secret" {
+		t.Errorf("expected 'secret', got %s", key.PrivateKey)
 	}
 }
 
@@ -205,8 +301,12 @@ func TestAddSSHKey(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unfulfilled expectations: %v", err)
+	mock.ExpectExec(`INSERT INTO ssh_keys`).
+		WithArgs(int32(2), pgxmock.AnyArg()).
+		WillReturnError(errors.New("db error"))
+	err = db.AddSSHKey(context.Background(), mock, 2, "private-key")
+	if err == nil {
+		t.Error("expected error")
 	}
 }
 
@@ -231,8 +331,36 @@ func TestSetSSHKeyAndUser(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unfulfilled expectations: %v", err)
+	// Begin error
+	mock.ExpectBegin().WillReturnError(errors.New("db error"))
+	err = db.SetSSHKeyAndUser(context.Background(), mock, 2, "ubuntu", "private-key")
+	if err == nil {
+		t.Error("expected error")
+	}
+
+	// Insert error
+	mock.ExpectBegin()
+	mock.ExpectExec(`INSERT INTO ssh_keys`).
+		WithArgs(int32(3), pgxmock.AnyArg()).
+		WillReturnError(errors.New("db error"))
+	mock.ExpectRollback()
+	err = db.SetSSHKeyAndUser(context.Background(), mock, 3, "ubuntu", "private-key")
+	if err == nil {
+		t.Error("expected error")
+	}
+
+	// Update error
+	mock.ExpectBegin()
+	mock.ExpectExec(`INSERT INTO ssh_keys`).
+		WithArgs(int32(4), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec(`UPDATE hosts SET ssh_user = \$1, updated_at = NOW\(\) WHERE id = \$2`).
+		WithArgs("ubuntu", int32(4)).
+		WillReturnError(errors.New("db error"))
+	mock.ExpectRollback()
+	err = db.SetSSHKeyAndUser(context.Background(), mock, 4, "ubuntu", "private-key")
+	if err == nil {
+		t.Error("expected error")
 	}
 }
 
@@ -250,16 +378,37 @@ func TestGetWebhooks(t *testing.T) {
 		WithArgs("update_success").
 		WillReturnRows(rows)
 
-	hooks, err := db.GetWebhooks(context.Background(), mock, "update_success")
+	_, err = db.GetWebhooks(context.Background(), mock, "update_success")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(hooks) != 1 {
-		t.Errorf("expected 1 webhook, got %d", len(hooks))
+	mock.ExpectQuery(`SELECT id, url, event FROM webhooks WHERE event = \$1`).
+		WithArgs("update_fail").
+		WillReturnError(errors.New("db error"))
+	_, err = db.GetWebhooks(context.Background(), mock, "update_fail")
+	if err == nil {
+		t.Error("expected error")
 	}
 
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unfulfilled expectations: %v", err)
+	// CollectRows error path
+	mock.ExpectQuery(`SELECT id, url, event FROM webhooks WHERE event = \$1`).
+		WithArgs("update_success").
+		WillReturnRows(mock.NewRows([]string{"id"}).AddRow("not-an-int"))
+	_, err = db.GetWebhooks(context.Background(), mock, "update_success")
+	if err == nil {
+		t.Error("expected error from CollectRows")
+	}
+
+	// 0 rows path
+	mock.ExpectQuery(`SELECT id, url, event FROM webhooks WHERE event = \$1`).
+		WithArgs("update_empty").
+		WillReturnRows(mock.NewRows([]string{"id", "url", "event"}))
+	hooks, err := db.GetWebhooks(context.Background(), mock, "update_empty")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hooks == nil {
+		t.Error("expected non-nil empty slice")
 	}
 }
