@@ -229,8 +229,8 @@ func TestHandleDeleteHost(t *testing.T) {
 	rr = httptest.NewRecorder()
 	app.handleDeleteHost(rr, req)
 
-	if rr.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 for mismatched hostname, got %d", rr.Code)
+	if rr.Code != http.StatusPreconditionFailed {
+		t.Errorf("expected 412 for mismatched hostname, got %d: %s", rr.Code, rr.Body.String())
 	}
 
 	// DB Error on GetHost
