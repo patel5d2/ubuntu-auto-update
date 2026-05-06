@@ -12,8 +12,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
+	"ubuntu-auto-update/backend/pkg/db"
 )
 
 // Lockout policy: too many failed logins triggers a temporary block. Numbers
@@ -76,7 +76,7 @@ func HashPassword(password string) (string, error) {
 }
 
 // Create inserts a new user. Returns ErrDuplicateUsername on unique-violation.
-func Create(ctx context.Context, db *pgxpool.Pool, username, password, role string) (User, error) {
+func Create(ctx context.Context, db db.DBTX, username, password, role string) (User, error) {
 	username = strings.TrimSpace(username)
 	if username == "" {
 		return User{}, errors.New("username required")
@@ -115,7 +115,7 @@ func mapUserInsertError(err error) error {
 }
 
 // List returns all users ordered by username.
-func List(ctx context.Context, db *pgxpool.Pool) ([]User, error) {
+func List(ctx context.Context, db db.DBTX) ([]User, error) {
 	rows, err := db.Query(ctx, `
 		SELECT id, username, role, disabled_at, created_at, updated_at,
 		       last_login_at, failed_logins, locked_until
@@ -134,7 +134,7 @@ func List(ctx context.Context, db *pgxpool.Pool) ([]User, error) {
 }
 
 // GetByUsername returns ErrUserNotFound if no row matches.
-func GetByUsername(ctx context.Context, db *pgxpool.Pool, username string) (User, error) {
+func GetByUsername(ctx context.Context, db db.DBTX, username string) (User, error) {
 	rows, err := db.Query(ctx, `
 		SELECT id, username, role, disabled_at, created_at, updated_at,
 		       last_login_at, failed_logins, locked_until
@@ -151,7 +151,7 @@ func GetByUsername(ctx context.Context, db *pgxpool.Pool, username string) (User
 
 // CountUsers reports the total number of rows. Used at boot to decide whether
 // to seed the bootstrap admin account.
-func CountUsers(ctx context.Context, db *pgxpool.Pool) (int, error) {
+func CountUsers(ctx context.Context, db db.DBTX) (int, error) {
 	var n int
 	err := db.QueryRow(ctx, `SELECT COUNT(*) FROM users`).Scan(&n)
 	return n, err
@@ -162,7 +162,7 @@ func CountUsers(ctx context.Context, db *pgxpool.Pool) (int, error) {
 // locks the account if MaxFailedLogins is reached. Always returns
 // ErrInvalidCredentials for the wrong-user / wrong-password / locked /
 // disabled cases — the handler then returns a single 401 to the caller.
-func Authenticate(ctx context.Context, db *pgxpool.Pool, username, password string) (User, error) {
+func Authenticate(ctx context.Context, db db.DBTX, username, password string) (User, error) {
 	var (
 		id           int32
 		passwordHash string
@@ -228,7 +228,7 @@ func Authenticate(ctx context.Context, db *pgxpool.Pool, username, password stri
 
 // SetPassword updates the password (and only the password). Used both from
 // /api/v1/users/{id}/password and from the bootstrap-admin path.
-func SetPassword(ctx context.Context, db *pgxpool.Pool, userID int32, newPassword string) error {
+func SetPassword(ctx context.Context, db db.DBTX, userID int32, newPassword string) error {
 	hash, err := HashPassword(newPassword)
 	if err != nil {
 		return err
@@ -247,7 +247,7 @@ func SetPassword(ctx context.Context, db *pgxpool.Pool, userID int32, newPasswor
 }
 
 // SetRole changes a user's role. Useful for promoting/demoting via /users API.
-func SetRole(ctx context.Context, db *pgxpool.Pool, userID int32, role string) error {
+func SetRole(ctx context.Context, db db.DBTX, userID int32, role string) error {
 	if !IsValidRole(role) {
 		return ErrInvalidRole
 	}
@@ -265,7 +265,7 @@ func SetRole(ctx context.Context, db *pgxpool.Pool, userID int32, role string) e
 
 // SetDisabled flips the disabled_at column. We keep the row so audit trail
 // references survive (foreign keys are ON DELETE SET NULL anyway).
-func SetDisabled(ctx context.Context, db *pgxpool.Pool, userID int32, disabled bool) error {
+func SetDisabled(ctx context.Context, db db.DBTX, userID int32, disabled bool) error {
 	var ts interface{}
 	if disabled {
 		ts = time.Now()
@@ -284,7 +284,7 @@ func SetDisabled(ctx context.Context, db *pgxpool.Pool, userID int32, disabled b
 
 // Delete removes a user row. Sessions cascade via FK; audit_log preserves
 // actor_label so the historical trail keeps the username even after deletion.
-func Delete(ctx context.Context, db *pgxpool.Pool, userID int32) error {
+func Delete(ctx context.Context, db db.DBTX, userID int32) error {
 	tag, err := db.Exec(ctx, `DELETE FROM users WHERE id = $1`, userID)
 	if err != nil {
 		return err
@@ -302,7 +302,7 @@ func Delete(ctx context.Context, db *pgxpool.Pool, userID int32) error {
 // Returns ErrPasswordTooShort directly (not wrapped) when ADMIN_PASSWORD is
 // shorter than the policy floor — startup callers usually want to surface
 // that as a fatal misconfiguration rather than continue with no admin.
-func EnsureBootstrapAdmin(ctx context.Context, db *pgxpool.Pool, username, password string) (bool, error) {
+func EnsureBootstrapAdmin(ctx context.Context, db db.DBTX, username, password string) (bool, error) {
 	username = strings.TrimSpace(username)
 	if username == "" || password == "" {
 		return false, nil

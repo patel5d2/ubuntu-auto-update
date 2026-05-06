@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"ubuntu-auto-update/backend/pkg/db"
 )
 
 // Action constants. Centralised so every callsite logs the same string for
@@ -59,7 +59,7 @@ type Event struct {
 
 // Log inserts a single audit record. Best-effort — callers should not fail
 // the user-facing operation on audit-write errors, but they should log them.
-func Log(ctx context.Context, db *pgxpool.Pool, e Event) error {
+func Log(ctx context.Context, db db.DBTX, e Event) error {
 	if e.Action == "" {
 		return fmt.Errorf("audit: action is required")
 	}
@@ -109,7 +109,7 @@ type ListOptions struct {
 }
 
 // List returns recent audit records, newest first. Defaults: limit=100.
-func List(ctx context.Context, db *pgxpool.Pool, opts ListOptions) ([]Record, error) {
+func List(ctx context.Context, db db.DBTX, opts ListOptions) ([]Record, error) {
 	limit := opts.Limit
 	if limit <= 0 || limit > 1000 {
 		limit = 100

@@ -24,7 +24,6 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/crypto/ssh"
 
@@ -47,7 +46,7 @@ import (
 const maxRequestBodySize = 1 << 20
 
 type Application struct {
-	DB             *pgxpool.Pool
+	DB             db.DBTX
 	TokenStore     *middleware.TokenStore // legacy in-memory store (tests + dev)
 	Sessions       session.Store          // production session store (DB-backed when DB available)
 	AuthConfig     *middleware.AuthConfig
@@ -1265,7 +1264,7 @@ func (app *Application) streamCommand(ctx context.Context, conn *websocket.Conn,
 // Backpressure: the websocket write is the slow path; if a client is gone the
 // chunk is silently dropped and we keep persisting to DB so history remains
 // accurate.
-func pumpReader(ctx context.Context, dbCtx context.Context, conn *websocket.Conn, pool *pgxpool.Pool, runID int32, src io.Reader) {
+func pumpReader(ctx context.Context, dbCtx context.Context, conn *websocket.Conn, pool db.DBTX, runID int32, src io.Reader) {
 	buf := make([]byte, 4096)
 	for {
 		select {

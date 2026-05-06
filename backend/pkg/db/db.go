@@ -24,6 +24,7 @@ type DBTX interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 	Begin(ctx context.Context) (pgx.Tx, error)
+	Ping(ctx context.Context) error
 }
 
 const hostColumns = `id, hostname, ssh_user, created_at, updated_at, last_seen, update_output, upgrade_output, error`
