@@ -165,12 +165,16 @@ impl AgentConfig {
     pub fn validate(&self) -> Result<(), ConfigError> {
         // Validate URLs
         if self.backend.url.is_empty() {
-            return Err(ConfigError::Message("Backend URL cannot be empty".to_string()));
+            return Err(ConfigError::Message(
+                "Backend URL cannot be empty".to_string(),
+            ));
         }
 
         // Validate timeouts
         if self.backend.timeout_seconds == 0 {
-            return Err(ConfigError::Message("Backend timeout must be > 0".to_string()));
+            return Err(ConfigError::Message(
+                "Backend timeout must be > 0".to_string(),
+            ));
         }
 
         // Validate log level
@@ -225,7 +229,7 @@ mod tests {
         let config = AgentConfig::default();
         let serialized = toml::to_string(&config).unwrap();
         let deserialized: AgentConfig = toml::from_str(&serialized).unwrap();
-        
+
         assert_eq!(config.backend.url, deserialized.backend.url);
         assert_eq!(config.logging.level, deserialized.logging.level);
     }

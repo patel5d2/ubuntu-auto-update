@@ -45,11 +45,16 @@ impl SecureHttpClient {
     pub fn new(config: &AgentConfig) -> Result<Self> {
         let mut client_builder = ClientBuilder::new()
             .timeout(Duration::from_secs(config.backend.timeout_seconds))
-            .user_agent(format!("ubuntu-auto-update-agent/{}", env!("CARGO_PKG_VERSION")));
+            .user_agent(format!(
+                "ubuntu-auto-update-agent/{}",
+                env!("CARGO_PKG_VERSION")
+            ));
 
         // Configure TLS
         if config.security.use_mtls {
-            if let (Some(cert_path), Some(key_path)) = (&config.security.cert_file, &config.security.key_file) {
+            if let (Some(cert_path), Some(key_path)) =
+                (&config.security.cert_file, &config.security.key_file)
+            {
                 let identity = load_client_identity(cert_path, key_path)?;
                 client_builder = client_builder.identity(identity);
                 info!("mTLS client certificate configured");
@@ -64,9 +69,11 @@ impl SecureHttpClient {
         }
 
         // Configure certificate verification
-        client_builder = client_builder.danger_accept_invalid_certs(!config.security.verify_server_cert);
+        client_builder =
+            client_builder.danger_accept_invalid_certs(!config.security.verify_server_cert);
 
-        let client = client_builder.build()
+        let client = client_builder
+            .build()
             .context("Failed to build HTTP client")?;
 
         // Load API key
@@ -146,25 +153,21 @@ impl SecureHttpClient {
         Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Unknown error during retries")))
     }
 
-    pub async fn post<T: serde::Serialize>(
-        &self,
-        endpoint: &str,
-        payload: &T,
-    ) -> Result<Response> {
+    pub async fn post<T: serde::Serialize>(&self, endpoint: &str, payload: &T) -> Result<Response> {
         let url = format!("{}{}", self.base_url, endpoint);
-        let json_payload = serde_json::to_string(payload)
-            .context("Failed to serialize payload")?;
+        let json_payload = serde_json::to_string(payload).context("Failed to serialize payload")?;
 
         debug!("Sending POST request to: {}", url);
 
-        let mut request = self.client
+        let mut request = self
+            .client
             .post(&url)
             .header("Content-Type", "application/json");
 
         // Add authentication
         if let Some(api_key) = &self.api_key {
-            let key_str = std::str::from_utf8(api_key.as_bytes())
-                .context("API key is not valid UTF-8")?;
+            let key_str =
+                std::str::from_utf8(api_key.as_bytes()).context("API key is not valid UTF-8")?;
             request = request.bearer_auth(key_str);
         }
 
@@ -192,8 +195,8 @@ impl SecureHttpClient {
 
         // Add authentication
         if let Some(api_key) = &self.api_key {
-            let key_str = std::str::from_utf8(api_key.as_bytes())
-                .context("API key is not valid UTF-8")?;
+            let key_str =
+                std::str::from_utf8(api_key.as_bytes()).context("API key is not valid UTF-8")?;
             request = request.bearer_auth(key_str);
         }
 
@@ -207,17 +210,25 @@ impl SecureHttpClient {
     }
 
     fn create_hmac_signature(&self, payload: &str, key: &SecretKey) -> Result<String> {
-        let mut mac = HmacSha256::new_from_slice(key.as_bytes())
-            .context("Invalid HMAC key length")?;
-        
+        let mut mac =
+            HmacSha256::new_from_slice(key.as_bytes()).context("Invalid HMAC key length")?;
+
         mac.update(payload.as_bytes());
         let signature = mac.finalize().into_bytes();
         Ok(BASE64.encode(signature))
     }
 
-    pub fn verify_hmac_signature(&self, payload: &str, signature: &str, key: &SecretKey) -> Result<bool> {
+    pub fn verify_hmac_signature(
+        &self,
+        payload: &str,
+        signature: &str,
+        key: &SecretKey,
+    ) -> Result<bool> {
         let expected_signature = self.create_hmac_signature(payload, key)?;
-        Ok(constant_time_eq(signature.as_bytes(), expected_signature.as_bytes()))
+        Ok(constant_time_eq(
+            signature.as_bytes(),
+            expected_signature.as_bytes(),
+        ))
     }
 }
 
@@ -237,10 +248,9 @@ fn load_client_identity(cert_path: &Path, key_path: &Path) -> Result<reqwest::Id
 fn load_ca_certificate(ca_path: &Path) -> Result<Certificate> {
     let ca_data = std::fs::read(ca_path)
         .with_context(|| format!("Failed to read CA certificate from {:?}", ca_path))?;
-    
-    let cert = Certificate::from_pem(&ca_data)
-        .context("Failed to parse CA certificate")?;
-    
+
+    let cert = Certificate::from_pem(&ca_data).context("Failed to parse CA certificate")?;
+
     Ok(cert)
 }
 
@@ -273,11 +283,11 @@ mod tests {
     fn test_hmac_signature() {
         let key = SecretKey(b"test-key".to_vec());
         let config = AgentConfig::default();
-        
+
         // This would fail in real test without proper client setup
         // but we can test the signature logic with a mock
         let payload = r#"{"test": "data"}"#;
-        
+
         // Test that we can create signatures (actual HTTP client creation would fail)
         // In real tests, you'd use a test HTTP server
     }
@@ -285,7 +295,7 @@ mod tests {
     #[tokio::test]
     async fn test_client_creation_with_default_config() {
         let config = AgentConfig::default();
-        
+
         // This might fail due to missing files, but tests the code path
         let _result = SecureHttpClient::new(&config);
         // In real tests, you'd mock the file system or use test fixtures

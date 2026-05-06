@@ -39,31 +39,40 @@ impl UpdateManager {
     }
 
     pub fn is_in_maintenance_window(&self) -> bool {
-        let (start, end) = match (&self.config.updates.maintenance_window_start, &self.config.updates.maintenance_window_end) {
+        let (start, end) = match (
+            &self.config.updates.maintenance_window_start,
+            &self.config.updates.maintenance_window_end,
+        ) {
             (Some(start_str), Some(end_str)) => {
                 let start_time = match NaiveTime::parse_from_str(start_str, "%H:%M") {
                     Ok(time) => time,
                     Err(e) => {
-                        warn!("Failed to parse maintenance window start: {} - {}", start_str, e);
+                        warn!(
+                            "Failed to parse maintenance window start: {} - {}",
+                            start_str, e
+                        );
                         return true; // Default to allowing updates
                     }
                 };
-                
+
                 let end_time = match NaiveTime::parse_from_str(end_str, "%H:%M") {
                     Ok(time) => time,
                     Err(e) => {
-                        warn!("Failed to parse maintenance window end: {} - {}", end_str, e);
+                        warn!(
+                            "Failed to parse maintenance window end: {} - {}",
+                            end_str, e
+                        );
                         return true; // Default to allowing updates
                     }
                 };
-                
+
                 (start_time, end_time)
             }
             _ => return true, // No maintenance window configured
         };
 
         let now = Local::now().time();
-        
+
         // Handle maintenance windows that cross midnight
         if start <= end {
             now >= start && now <= end
@@ -91,7 +100,9 @@ impl UpdateManager {
 
         // Check if we're root (required for most operations)
         if !self.is_running_as_root() && !self.dry_run {
-            return Err(anyhow::anyhow!("Must run as root to perform system updates"));
+            return Err(anyhow::anyhow!(
+                "Must run as root to perform system updates"
+            ));
         }
 
         // Run apt updates
@@ -143,7 +154,7 @@ impl UpdateManager {
 
         results.success = true;
         results.duration_seconds = start_time.elapsed().as_secs_f64();
-        
+
         info!(
             "Update process completed successfully in {:.2}s: {} packages updated, {} available, reboot required: {}",
             results.duration_seconds,
@@ -159,11 +170,13 @@ impl UpdateManager {
         info!("Running APT updates");
 
         // First, update package lists
-        let update_output = self.run_command_with_timeout(
-            "apt-get",
-            &["update"],
-            Duration::from_secs(300), // 5 minutes
-        ).await?;
+        let update_output = self
+            .run_command_with_timeout(
+                "apt-get",
+                &["update"],
+                Duration::from_secs(300), // 5 minutes
+            )
+            .await?;
 
         if !update_output.status.success() {
             return Err(anyhow::anyhow!(
@@ -173,11 +186,9 @@ impl UpdateManager {
         }
 
         // Get list of available updates
-        let list_output = self.run_command_with_timeout(
-            "apt",
-            &["list", "--upgradable"],
-            Duration::from_secs(60),
-        ).await?;
+        let list_output = self
+            .run_command_with_timeout("apt", &["list", "--upgradable"], Duration::from_secs(60))
+            .await?;
 
         let packages_available = if list_output.status.success() {
             self.parse_apt_upgradable_count(&String::from_utf8_lossy(&list_output.stdout))?
@@ -185,19 +196,25 @@ impl UpdateManager {
             0
         };
 
-        let mut apt_output = format!("=== APT Update Output ===\n{}", 
-            String::from_utf8_lossy(&update_output.stdout));
+        let mut apt_output = format!(
+            "=== APT Update Output ===\n{}",
+            String::from_utf8_lossy(&update_output.stdout)
+        );
 
         let (packages_updated, bytes_downloaded) = if self.dry_run {
             // Dry run - just show what would be updated
-            let dry_run_output = self.run_command_with_timeout(
-                "apt-get",
-                &["--dry-run", "upgrade"],
-                Duration::from_secs(300),
-            ).await?;
+            let dry_run_output = self
+                .run_command_with_timeout(
+                    "apt-get",
+                    &["--dry-run", "upgrade"],
+                    Duration::from_secs(300),
+                )
+                .await?;
 
-            apt_output.push_str(&format!("\n=== Dry Run Upgrade Output ===\n{}", 
-                String::from_utf8_lossy(&dry_run_output.stdout)));
+            apt_output.push_str(&format!(
+                "\n=== Dry Run Upgrade Output ===\n{}",
+                String::from_utf8_lossy(&dry_run_output.stdout)
+            ));
 
             (0, 0) // No actual updates in dry run
         } else {
@@ -208,14 +225,18 @@ impl UpdateManager {
             }
 
             // Run the actual upgrade
-            let upgrade_output = self.run_command_with_timeout(
-                "apt-get",
-                &upgrade_args,
-                Duration::from_secs(1800), // 30 minutes
-            ).await?;
+            let upgrade_output = self
+                .run_command_with_timeout(
+                    "apt-get",
+                    &upgrade_args,
+                    Duration::from_secs(1800), // 30 minutes
+                )
+                .await?;
 
-            apt_output.push_str(&format!("\n=== Upgrade Output ===\n{}", 
-                String::from_utf8_lossy(&upgrade_output.stdout)));
+            apt_output.push_str(&format!(
+                "\n=== Upgrade Output ===\n{}",
+                String::from_utf8_lossy(&upgrade_output.stdout)
+            ));
 
             if !upgrade_output.status.success() {
                 return Err(anyhow::anyhow!(
@@ -224,21 +245,23 @@ impl UpdateManager {
                 ));
             }
 
-            let packages_updated = self.parse_apt_packages_updated(&String::from_utf8_lossy(&upgrade_output.stdout))?;
-            let bytes_downloaded = self.parse_apt_bytes_downloaded(&String::from_utf8_lossy(&upgrade_output.stdout))?;
+            let packages_updated =
+                self.parse_apt_packages_updated(&String::from_utf8_lossy(&upgrade_output.stdout))?;
+            let bytes_downloaded =
+                self.parse_apt_bytes_downloaded(&String::from_utf8_lossy(&upgrade_output.stdout))?;
 
             // Clean up
-            let _ = self.run_command_with_timeout(
-                "apt-get",
-                &["autoremove", "-y"],
-                Duration::from_secs(300),
-            ).await;
+            let _ = self
+                .run_command_with_timeout(
+                    "apt-get",
+                    &["autoremove", "-y"],
+                    Duration::from_secs(300),
+                )
+                .await;
 
-            let _ = self.run_command_with_timeout(
-                "apt-get",
-                &["autoclean"],
-                Duration::from_secs(60),
-            ).await;
+            let _ = self
+                .run_command_with_timeout("apt-get", &["autoclean"], Duration::from_secs(60))
+                .await;
 
             (packages_updated, bytes_downloaded)
         };
@@ -259,17 +282,15 @@ impl UpdateManager {
         }
 
         let output = if self.dry_run {
-            self.run_command_with_timeout(
-                "snap",
-                &["refresh", "--list"],
-                Duration::from_secs(60),
-            ).await?
+            self.run_command_with_timeout("snap", &["refresh", "--list"], Duration::from_secs(60))
+                .await?
         } else {
             self.run_command_with_timeout(
                 "snap",
                 &["refresh"],
                 Duration::from_secs(900), // 15 minutes
-            ).await?
+            )
+            .await?
         };
 
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
@@ -287,19 +308,26 @@ impl UpdateManager {
                 "flatpak",
                 &["update", "--show-details"],
                 Duration::from_secs(60),
-            ).await?
+            )
+            .await?
         } else {
             self.run_command_with_timeout(
                 "flatpak",
                 &["update", "-y"],
                 Duration::from_secs(900), // 15 minutes
-            ).await?
+            )
+            .await?
         };
 
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
-    async fn run_command_with_timeout(&self, command: &str, args: &[&str], timeout_duration: Duration) -> Result<Output> {
+    async fn run_command_with_timeout(
+        &self,
+        command: &str,
+        args: &[&str],
+        timeout_duration: Duration,
+    ) -> Result<Output> {
         debug!("Running command: {} {}", command, args.join(" "));
 
         let child = Command::new(command)
@@ -311,14 +339,23 @@ impl UpdateManager {
             .with_context(|| format!("Failed to spawn command: {}", command))?;
 
         let output = timeout(timeout_duration, async {
-            tokio::task::spawn_blocking(move || {
-                child.wait_with_output()
-            }).await.unwrap()
-        }).await
-        .with_context(|| format!("Command timed out after {:?}: {}", timeout_duration, command))?
+            tokio::task::spawn_blocking(move || child.wait_with_output())
+                .await
+                .unwrap()
+        })
+        .await
+        .with_context(|| {
+            format!(
+                "Command timed out after {:?}: {}",
+                timeout_duration, command
+            )
+        })?
         .with_context(|| format!("Command failed: {}", command))?;
 
-        debug!("Command completed with exit code: {:?}", output.status.code());
+        debug!(
+            "Command completed with exit code: {:?}",
+            output.status.code()
+        );
         Ok(output)
     }
 
@@ -336,11 +373,9 @@ impl UpdateManager {
 
         if output.status.success() {
             let running_kernel = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            
+
             // Check if there's a newer kernel installed
-            let dpkg_output = Command::new("dpkg")
-                .args(&["-l", "linux-image-*"])
-                .output();
+            let dpkg_output = Command::new("dpkg").args(&["-l", "linux-image-*"]).output();
 
             if let Ok(dpkg_output) = dpkg_output {
                 if dpkg_output.status.success() {
@@ -359,31 +394,32 @@ impl UpdateManager {
     fn parse_apt_upgradable_count(&self, output: &str) -> Result<u64> {
         let lines: Vec<&str> = output.lines().collect();
         // First line is usually "Listing..." so count actual package lines
-        let count = lines.iter()
+        let count = lines
+            .iter()
             .skip(1) // Skip header
             .filter(|line| line.contains("/") && line.contains("upgradable"))
             .count();
-        
+
         Ok(count as u64)
     }
 
     fn parse_apt_packages_updated(&self, output: &str) -> Result<u64> {
         // Look for patterns like "X upgraded, Y newly installed"
         let re = Regex::new(r"(\d+)\s+upgraded")?;
-        
+
         if let Some(captures) = re.captures(output) {
             if let Some(count_str) = captures.get(1) {
                 return Ok(count_str.as_str().parse::<u64>()?);
             }
         }
-        
+
         Ok(0)
     }
 
     fn parse_apt_bytes_downloaded(&self, output: &str) -> Result<u64> {
         // Look for patterns like "Need to get 42.1 MB of archives"
         let re = Regex::new(r"Need to get ([0-9.,]+)\s*([kMG]?B)")?;
-        
+
         if let Some(captures) = re.captures(output) {
             if let (Some(size_str), Some(unit_str)) = (captures.get(1), captures.get(2)) {
                 let size: f64 = size_str.as_str().replace(",", "").parse()?;
@@ -393,19 +429,19 @@ impl UpdateManager {
                     "GB" => 1_000_000_000,
                     _ => 1,
                 };
-                
+
                 return Ok((size * multiplier as f64) as u64);
             }
         }
-        
+
         Ok(0)
     }
 
     fn is_running_as_root(&self) -> bool {
         // Check if running as root
-        std::process::id() == 0 || 
-        std::env::var("USER").unwrap_or_default() == "root" ||
-        std::env::var("EUID").unwrap_or_default() == "0"
+        std::process::id() == 0
+            || std::env::var("USER").unwrap_or_default() == "root"
+            || std::env::var("EUID").unwrap_or_default() == "0"
     }
 }
 
@@ -425,12 +461,12 @@ mod tests {
     #[test]
     fn test_parse_apt_upgradable_count() {
         let manager = UpdateManager::new(AgentConfig::default()).unwrap();
-        
+
         let output = r#"Listing...
 firefox/jammy-updates,jammy-security 108.0.1+build1-0ubuntu0.22.04.1 amd64 [upgradable from: 108.0+build2-0ubuntu0.22.04.1]
 thunderbird/jammy-updates,jammy-security 1:102.6.0+build1-0ubuntu0.22.04.1 amd64 [upgradable from: 1:102.5.1+build2-0ubuntu0.22.04.1]
 "#;
-        
+
         let count = manager.parse_apt_upgradable_count(output).unwrap();
         assert_eq!(count, 2);
     }
@@ -438,7 +474,7 @@ thunderbird/jammy-updates,jammy-security 1:102.6.0+build1-0ubuntu0.22.04.1 amd64
     #[test]
     fn test_parse_apt_packages_updated() {
         let manager = UpdateManager::new(AgentConfig::default()).unwrap();
-        
+
         let output = r#"
 Reading package lists...
 Building dependency tree...
@@ -446,7 +482,7 @@ The following packages will be upgraded:
   firefox thunderbird
 2 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.
 "#;
-        
+
         let count = manager.parse_apt_packages_updated(output).unwrap();
         assert_eq!(count, 2);
     }
@@ -454,7 +490,7 @@ The following packages will be upgraded:
     #[test]
     fn test_parse_apt_bytes_downloaded() {
         let manager = UpdateManager::new(AgentConfig::default()).unwrap();
-        
+
         let output = r#"
 The following packages will be upgraded:
   firefox thunderbird
@@ -462,7 +498,7 @@ The following packages will be upgraded:
 Need to get 42.1 MB of archives.
 After this operation, 512 kB of additional disk space will be used.
 "#;
-        
+
         let bytes = manager.parse_apt_bytes_downloaded(output).unwrap();
         assert_eq!(bytes, 42_100_000);
     }
@@ -472,9 +508,9 @@ After this operation, 512 kB of additional disk space will be used.
         let mut config = AgentConfig::default();
         config.updates.maintenance_window_start = Some("02:00".to_string());
         config.updates.maintenance_window_end = Some("04:00".to_string());
-        
+
         let manager = UpdateManager::new(config).unwrap();
-        
+
         // This test would need to be run at different times or mock the time
         // For now, just ensure it doesn't panic
         let _in_window = manager.is_in_maintenance_window();

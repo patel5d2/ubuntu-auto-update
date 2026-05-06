@@ -49,13 +49,11 @@ impl EnrollmentManager {
         let host_id = self.get_or_create_host_id()?;
 
         // Get system information
-        let hostname = hostname
-            .map(|h| h.to_string())
-            .unwrap_or_else(|| {
-                gethostname::gethostname()
-                    .into_string()
-                    .unwrap_or_else(|_| "unknown".to_string())
-            });
+        let hostname = hostname.map(|h| h.to_string()).unwrap_or_else(|| {
+            gethostname::gethostname()
+                .into_string()
+                .unwrap_or_else(|_| "unknown".to_string())
+        });
 
         let enrollment_request = EnrollmentRequest {
             enrollment_token: token.to_string(),
@@ -203,7 +201,7 @@ impl EnrollmentManager {
                     }
                 }
             }
-            
+
             Ok("Unknown".to_string())
         }
     }
@@ -241,9 +239,9 @@ mod tests {
         // This would fail without proper HTTP client setup in tests
         // but we can test the host ID logic
         let host_id_file = &config.enrollment.host_id_file;
-        
+
         assert!(!host_id_file.exists());
-        
+
         // In a real test, you'd mock the HTTP client
         // For now, just test that the file paths are set correctly
         assert!(host_id_file.to_string_lossy().contains("host.id"));
@@ -252,10 +250,10 @@ mod tests {
     #[test]
     fn test_os_version_parsing() {
         let config = AgentConfig::default();
-        
+
         // Create a minimal enrollment manager (will fail HTTP client creation)
         // but we can test the OS version logic if we had a way to mock it
-        
+
         // In practice, you'd want to mock the Command execution
         // For now, just test that the function exists and has the right signature
         let _result = std::process::Command::new("echo")

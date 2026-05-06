@@ -1,9 +1,9 @@
 mod config;
+mod enrollment;
 mod http_client;
+mod logging;
 mod metrics;
 mod updater;
-mod enrollment;
-mod logging;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -12,14 +12,14 @@ use std::path::PathBuf;
 use std::process;
 use std::time::{Duration, Instant};
 use tokio::signal;
-use tracing::{error, info, warn, debug};
+use tracing::{debug, error, info, warn};
 
 use crate::config::AgentConfig;
+use crate::enrollment::EnrollmentManager;
 use crate::http_client::SecureHttpClient;
+use crate::logging::setup_logging;
 use crate::metrics::MetricsCollector;
 use crate::updater::{UpdateManager, UpdateResults as UpdaterUpdateResults};
-use crate::enrollment::EnrollmentManager;
-use crate::logging::setup_logging;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -27,15 +27,15 @@ struct Cli {
     /// Configuration file path
     #[arg(short, long)]
     config: Option<PathBuf>,
-    
+
     /// Override backend URL
     #[arg(long)]
     backend_url: Option<String>,
-    
+
     /// Enable verbose logging
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
-    
+
     /// Enable dry-run mode (no actual updates)
     #[arg(long)]
     dry_run: bool,
@@ -113,19 +113,18 @@ struct SystemInfo {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Cli::parse();
-    
+
     // Load configuration
     let mut config = if let Some(config_path) = &args.config {
         AgentConfig::load_from_file(config_path)
             .with_context(|| format!("Failed to load config from {:?}", config_path))?
     } else {
-        AgentConfig::load()
-            .unwrap_or_else(|e| {
-                eprintln!("Warning: Failed to load config, using defaults: {}", e);
-                AgentConfig::default()
-            })
+        AgentConfig::load().unwrap_or_else(|e| {
+            eprintln!("Warning: Failed to load config, using defaults: {}", e);
+            AgentConfig::default()
+        })
     };
-    
+
     // Apply CLI overrides
     if let Some(backend_url) = &args.backend_url {
         config.backend.url = backend_url.clone();
@@ -133,59 +132,50 @@ async fn main() -> Result<()> {
     if args.dry_run {
         config.updates.dry_run = true;
     }
-    
+
     // Override log level based on verbosity
     match args.verbose {
-        0 => {}, // Use config default
+        0 => {} // Use config default
         1 => config.logging.level = "debug".to_string(),
         2 => config.logging.level = "trace".to_string(),
         _ => config.logging.level = "trace".to_string(),
     }
-    
+
     // Validate configuration
-    config.validate()
+    config
+        .validate()
         .with_context(|| "Configuration validation failed")?;
-    
+
     // Setup logging
-    setup_logging(&config.logging)
-        .with_context(|| "Failed to setup logging")?;
-    
-    info!("Starting Ubuntu Auto-Update Agent v{}", env!("CARGO_PKG_VERSION"));
+    setup_logging(&config.logging).with_context(|| "Failed to setup logging")?;
+
+    info!(
+        "Starting Ubuntu Auto-Update Agent v{}",
+        env!("CARGO_PKG_VERSION")
+    );
     debug!("Configuration loaded: backend={}", config.backend.url);
-    
+
     match args.command {
-        Commands::GenerateConfig { output } => {
-            generate_default_config(&output).await
-        }
-        Commands::Run { force } => {
-            run_updates(&config, force).await
-        }
-        Commands::Enroll { token, hostname } => {
-            enroll_agent(&config, &token, hostname).await
-        }
-        Commands::Status => {
-            show_status(&config).await
-        }
-        Commands::Metrics => {
-            export_metrics(&config).await
-        }
-        Commands::Test => {
-            test_connectivity(&config).await
-        }
+        Commands::GenerateConfig { output } => generate_default_config(&output).await,
+        Commands::Run { force } => run_updates(&config, force).await,
+        Commands::Enroll { token, hostname } => enroll_agent(&config, &token, hostname).await,
+        Commands::Status => show_status(&config).await,
+        Commands::Metrics => export_metrics(&config).await,
+        Commands::Test => test_connectivity(&config).await,
     }
 }
 
 async fn generate_default_config(output_path: &PathBuf) -> Result<()> {
     info!("Generating default configuration at {:?}", output_path);
-    
+
     if let Some(parent) = output_path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("Failed to create config directory: {:?}", parent))?;
     }
-    
+
     AgentConfig::save_default_config(output_path.to_str().unwrap())
         .with_context(|| "Failed to save default configuration")?;
-    
+
     info!("Default configuration generated successfully");
     Ok(())
 }
@@ -193,44 +183,46 @@ async fn generate_default_config(output_path: &PathBuf) -> Result<()> {
 async fn run_updates(config: &AgentConfig, force: bool) -> Result<()> {
     info!("Starting update run (dry_run={})", config.updates.dry_run);
     let start_time = Instant::now();
-    
+
     // Initialize metrics collector
     let metrics_collector = if config.metrics.enabled {
-        Some(MetricsCollector::new(config.metrics.clone())
-            .with_context(|| "Failed to initialize metrics collector")?)
+        Some(
+            MetricsCollector::new(config.metrics.clone())
+                .with_context(|| "Failed to initialize metrics collector")?,
+        )
     } else {
         None
     };
-    
+
     if let Some(metrics) = &metrics_collector {
         metrics.record_update_start();
     }
-    
+
     // Initialize HTTP client
-    let http_client = SecureHttpClient::new(config)
-        .with_context(|| "Failed to initialize HTTP client")?;
-    
+    let http_client =
+        SecureHttpClient::new(config).with_context(|| "Failed to initialize HTTP client")?;
+
     // Initialize update manager
     let mut update_manager = UpdateManager::new(config.clone())
         .with_context(|| "Failed to initialize update manager")?;
-    
+
     // Check maintenance window
     if !force && !update_manager.is_in_maintenance_window() {
         warn!("Outside maintenance window, skipping update (use --force to override)");
         return Ok(());
     }
-    
+
     // Run updates
     let update_result = update_manager.run_updates().await;
     let duration = start_time.elapsed();
-    
+
     // Collect system metrics if enabled
     let system_metrics = if let Some(metrics) = &metrics_collector {
         metrics.collect_system_metrics().await.ok()
     } else {
         None
     };
-    
+
     // Record metrics
     if let Some(metrics) = &metrics_collector {
         match &update_result {
@@ -253,34 +245,46 @@ async fn run_updates(config: &AgentConfig, force: bool) -> Result<()> {
                 );
             }
         }
-        
+
         // Write textfile metrics
         if let Err(e) = metrics.write_textfile_metrics().await {
             warn!("Failed to write textfile metrics: {}", e);
         }
     }
-    
+
     // Send report to backend
     match &update_result {
         Ok(results) => {
             let converted_results = convert_updater_results(results);
-            let report = create_host_report(config, &converted_results, system_metrics.as_ref(), duration)?;
-            send_report_to_backend(&http_client, &report).await
+            let report = create_host_report(
+                config,
+                &converted_results,
+                system_metrics.as_ref(),
+                duration,
+            )?;
+            send_report_to_backend(&http_client, &report)
+                .await
                 .with_context(|| "Failed to send report to backend")?;
-            
-            info!("Update completed successfully in {:.2}s", duration.as_secs_f64());
-            
+
+            info!(
+                "Update completed successfully in {:.2}s",
+                duration.as_secs_f64()
+            );
+
             // Handle reboot if required and enabled
             if results.reboot_required && config.updates.auto_reboot {
-                info!("Reboot required, scheduling reboot in {} minutes", config.updates.reboot_delay_minutes);
+                info!(
+                    "Reboot required, scheduling reboot in {} minutes",
+                    config.updates.reboot_delay_minutes
+                );
                 schedule_reboot(config.updates.reboot_delay_minutes).await?;
             }
-            
+
             Ok(())
         }
         Err(e) => {
             error!("Update failed: {}", e);
-            
+
             // Still try to send error report
             let error_results = UpdateResults {
                 success: false,
@@ -294,10 +298,11 @@ async fn run_updates(config: &AgentConfig, force: bool) -> Result<()> {
                 snap_output: None,
                 flatpak_output: None,
             };
-            
-            let report = create_host_report(config, &error_results, system_metrics.as_ref(), duration)?;
+
+            let report =
+                create_host_report(config, &error_results, system_metrics.as_ref(), duration)?;
             let _ = send_report_to_backend(&http_client, &report).await;
-            
+
             Err(anyhow::anyhow!("Update failed: {}", e))
         }
     }
@@ -305,13 +310,15 @@ async fn run_updates(config: &AgentConfig, force: bool) -> Result<()> {
 
 async fn enroll_agent(config: &AgentConfig, token: &str, hostname: Option<String>) -> Result<()> {
     info!("Starting agent enrollment");
-    
+
     let enrollment_manager = EnrollmentManager::new(config)
         .with_context(|| "Failed to initialize enrollment manager")?;
-    
-    enrollment_manager.enroll(token, hostname.as_deref()).await
+
+    enrollment_manager
+        .enroll(token, hostname.as_deref())
+        .await
         .with_context(|| "Enrollment failed")?;
-    
+
     info!("Agent enrolled successfully");
     Ok(())
 }
@@ -321,33 +328,40 @@ async fn show_status(config: &AgentConfig) -> Result<()> {
     println!("================================");
     println!("Version: {}", env!("CARGO_PKG_VERSION"));
     println!("Backend URL: {}", config.backend.url);
-    
+
     // Check if enrolled
     if config.security.api_key_file.exists() {
         println!("Status: Enrolled");
     } else {
         println!("Status: Not enrolled");
     }
-    
+
     // Show last metrics if available
     if config.metrics.enabled {
         if let Ok(metrics_collector) = MetricsCollector::new(config.metrics.clone()) {
             let update_metrics = metrics_collector.get_update_metrics();
             println!("\nLast Update:");
             if update_metrics.last_run_timestamp > 0 {
-                let last_run = chrono::DateTime::from_timestamp(update_metrics.last_run_timestamp as i64, 0);
+                let last_run =
+                    chrono::DateTime::from_timestamp(update_metrics.last_run_timestamp as i64, 0);
                 println!("  Time: {:?}", last_run);
-                println!("  Duration: {:.2}s", update_metrics.last_run_duration_seconds);
+                println!(
+                    "  Duration: {:.2}s",
+                    update_metrics.last_run_duration_seconds
+                );
                 println!("  Exit Code: {}", update_metrics.last_run_exit_code);
                 println!("  Packages Updated: {}", update_metrics.packages_updated);
-                println!("  Packages Available: {}", update_metrics.packages_available);
+                println!(
+                    "  Packages Available: {}",
+                    update_metrics.packages_available
+                );
                 println!("  Reboot Required: {}", update_metrics.reboot_required);
             } else {
                 println!("  No previous runs recorded");
             }
         }
     }
-    
+
     Ok(())
 }
 
@@ -356,23 +370,24 @@ async fn export_metrics(config: &AgentConfig) -> Result<()> {
         println!("Metrics collection is disabled");
         return Ok(());
     }
-    
+
     let metrics_collector = MetricsCollector::new(config.metrics.clone())
         .with_context(|| "Failed to initialize metrics collector")?;
-    
-    let prometheus_output = metrics_collector.export_prometheus_metrics()
+
+    let prometheus_output = metrics_collector
+        .export_prometheus_metrics()
         .with_context(|| "Failed to export metrics")?;
-    
+
     println!("{}", prometheus_output);
     Ok(())
 }
 
 async fn test_connectivity(config: &AgentConfig) -> Result<()> {
     info!("Testing connectivity to backend: {}", config.backend.url);
-    
-    let http_client = SecureHttpClient::new(config)
-        .with_context(|| "Failed to initialize HTTP client")?;
-    
+
+    let http_client =
+        SecureHttpClient::new(config).with_context(|| "Failed to initialize HTTP client")?;
+
     let start = Instant::now();
     match http_client.get("/api/v1/health").await {
         Ok(response) => {
@@ -380,7 +395,7 @@ async fn test_connectivity(config: &AgentConfig) -> Result<()> {
             println!("✓ Backend reachable");
             println!("  Status: {}", response.status());
             println!("  Response time: {:.2}ms", duration.as_millis());
-            
+
             if response.status().is_success() {
                 println!("✓ Backend is healthy");
             } else {
@@ -392,7 +407,7 @@ async fn test_connectivity(config: &AgentConfig) -> Result<()> {
             return Err(e);
         }
     }
-    
+
     Ok(())
 }
 
@@ -402,33 +417,39 @@ fn create_host_report(
     system_metrics: Option<&crate::metrics::SystemMetrics>,
     duration: Duration,
 ) -> Result<HostReport> {
-    let hostname = gethostname::gethostname().into_string()
+    let hostname = gethostname::gethostname()
+        .into_string()
         .map_err(|_| anyhow::anyhow!("Failed to get hostname"))?;
-    
+
     let system_info = SystemInfo {
         os_version: get_os_version()?,
         kernel_version: get_kernel_version()?,
         architecture: std::env::consts::ARCH.to_string(),
         uptime_seconds: system_metrics.map(|m| m.uptime_seconds).unwrap_or(0),
-        load_average: system_metrics.map(|m| vec![m.load_average_1m, m.load_average_5m, m.load_average_15m]).unwrap_or_default(),
+        load_average: system_metrics
+            .map(|m| vec![m.load_average_1m, m.load_average_5m, m.load_average_15m])
+            .unwrap_or_default(),
         memory_total_bytes: system_metrics.map(|m| m.memory_total_bytes).unwrap_or(0),
-        memory_available_bytes: system_metrics.map(|m| m.memory_total_bytes - m.memory_usage_bytes).unwrap_or(0),
-        disk_usage_percent: system_metrics.map(|m| {
-            if m.disk_total_bytes > 0 {
-                (m.disk_usage_bytes as f64 / m.disk_total_bytes as f64) * 100.0
-            } else {
-                0.0
-            }
-        }).unwrap_or(0.0),
+        memory_available_bytes: system_metrics
+            .map(|m| m.memory_total_bytes - m.memory_usage_bytes)
+            .unwrap_or(0),
+        disk_usage_percent: system_metrics
+            .map(|m| {
+                if m.disk_total_bytes > 0 {
+                    (m.disk_usage_bytes as f64 / m.disk_total_bytes as f64) * 100.0
+                } else {
+                    0.0
+                }
+            })
+            .unwrap_or(0.0),
     };
-    
+
     let metrics_json = if let Some(metrics) = system_metrics {
-        serde_json::to_value(metrics)
-            .with_context(|| "Failed to serialize metrics")?  
+        serde_json::to_value(metrics).with_context(|| "Failed to serialize metrics")?
     } else {
         serde_json::Value::Null
     };
-    
+
     Ok(HostReport {
         hostname,
         agent_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -441,17 +462,17 @@ fn create_host_report(
 
 async fn send_report_to_backend(client: &SecureHttpClient, report: &HostReport) -> Result<()> {
     debug!("Sending report to backend for host: {}", report.hostname);
-    
+
     let response = client
         .post_with_retry(
             "/api/v1/report",
             report,
-            3, // max retries
+            3,                      // max retries
             Duration::from_secs(5), // retry delay
         )
         .await
         .with_context(|| "Failed to send report to backend")?;
-    
+
     if response.status().is_success() {
         info!("Report sent successfully to backend");
     } else {
@@ -463,24 +484,28 @@ async fn send_report_to_backend(client: &SecureHttpClient, report: &HostReport) 
             body
         ));
     }
-    
+
     Ok(())
 }
 
 async fn schedule_reboot(delay_minutes: u32) -> Result<()> {
     info!("Scheduling system reboot in {} minutes", delay_minutes);
-    
+
     let delay_seconds = delay_minutes * 60;
     let output = std::process::Command::new("shutdown")
-        .args(["-r", &format!("+{}", delay_minutes), "Scheduled reboot after system updates"])
+        .args([
+            "-r",
+            &format!("+{}", delay_minutes),
+            "Scheduled reboot after system updates",
+        ])
         .output()
         .with_context(|| "Failed to schedule reboot")?;
-    
+
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(anyhow::anyhow!("Failed to schedule reboot: {}", stderr));
     }
-    
+
     info!("Reboot scheduled successfully");
     Ok(())
 }
@@ -490,7 +515,7 @@ fn get_os_version() -> Result<String> {
         .args(["-ds"])
         .output()
         .with_context(|| "Failed to get OS version")?;
-    
+
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     } else {
@@ -518,7 +543,7 @@ fn get_kernel_version() -> Result<String> {
         .arg("-r")
         .output()
         .with_context(|| "Failed to get kernel version")?;
-    
+
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     } else {
