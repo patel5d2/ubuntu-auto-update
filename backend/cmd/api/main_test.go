@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,7 +11,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/mux"
+	"github.com/jackc/pgx/v5"
+	"github.com/pashagolub/pgxmock/v4"
 	"ubuntu-auto-update/backend/pkg/middleware"
+	"ubuntu-auto-update/backend/pkg/models"
+	"ubuntu-auto-update/backend/pkg/session"
 )
 
 // testApp creates an Application for testing with a token store but no real DB.
@@ -22,6 +29,24 @@ func testApp(t *testing.T) *Application {
 		AuthConfig: middleware.NewAuthConfig(),
 		CORS:       middleware.LoadCORSConfig(),
 	}
+}
+
+// testAppWithDB creates an Application for testing with a mocked DB.
+func testAppWithDB(t *testing.T) (*Application, pgxmock.PgxPoolIface) {
+	t.Helper()
+	t.Setenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000")
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("error creating mock: %v", err)
+	}
+
+	app := &Application{
+		DB:         mock,
+		TokenStore: middleware.GetTokenStore(),
+		AuthConfig: middleware.NewAuthConfig(),
+		CORS:       middleware.LoadCORSConfig(),
+	}
+	return app, mock
 }
 
 // --- handleLogin tests ---
@@ -277,6 +302,75 @@ func TestAuthMiddleware_ExpiredToken(t *testing.T) {
 	}
 }
 
+// --- handleMe tests ---
+
+func TestHandleMe_Success(t *testing.T) {
+	app, _ := testAppWithDB(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
+	req = req.WithContext(context.WithValue(req.Context(), middleware.PrincipalContextKey, &session.Principal{Username: "admin", Role: session.RoleAdmin}))
+	rr := httptest.NewRecorder()
+	app.handleMe(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rr.Code)
+	}
+}
+
+func TestHandleMe_NoPrincipal(t *testing.T) {
+	app, _ := testAppWithDB(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
+	rr := httptest.NewRecorder()
+	app.handleMe(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", rr.Code)
+	}
+}
+
+// --- handleLogout tests ---
+
+func TestHandleLogout_Success(t *testing.T) {
+	app, mock := testAppWithDB(t)
+	defer mock.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/logout", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: "valid-token"})
+	req = req.WithContext(context.WithValue(req.Context(), middleware.PrincipalContextKey, &session.Principal{Username: "admin", Role: session.RoleAdmin}))
+	
+	mock.ExpectExec(`INSERT INTO audit_log`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+
+	rr := httptest.NewRecorder()
+	app.handleLogout(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rr.Code)
+	}
+}
+
+func TestHandleLogout_BearerToken(t *testing.T) {
+	app, mock := testAppWithDB(t)
+	defer mock.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/logout", nil)
+	req.Header.Set("Authorization", "Bearer valid-token")
+	req = req.WithContext(context.WithValue(req.Context(), middleware.PrincipalContextKey, &session.Principal{Username: "admin", Role: session.RoleAdmin}))
+
+	mock.ExpectExec(`INSERT INTO audit_log`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+
+	rr := httptest.NewRecorder()
+	app.handleLogout(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rr.Code)
+	}
+}
+
 // --- CORS middleware tests (now in pkg/middleware/cors.go) ---
 
 func TestCorsMiddleware_SetsHeaders(t *testing.T) {
@@ -325,8 +419,34 @@ func TestCorsMiddleware_UnknownOriginNotAllowed(t *testing.T) {
 
 // --- handleHealth tests (requires DB, so we test the error path) ---
 
-func TestHandleHealth_NoDB(t *testing.T) {
-	t.Skip("Requires DB mock - covered by integration tests")
+func TestHandleHealth_Success(t *testing.T) {
+	app, mock := testAppWithDB(t)
+	defer mock.Close()
+
+	mock.ExpectPing()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
+	rr := httptest.NewRecorder()
+	app.handleHealth(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rr.Code)
+	}
+}
+
+func TestHandleHealth_DBError(t *testing.T) {
+	app, mock := testAppWithDB(t)
+	defer mock.Close()
+
+	mock.ExpectPing().WillReturnError(sql.ErrConnDone)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
+	rr := httptest.NewRecorder()
+	app.handleHealth(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d", rr.Code)
+	}
 }
 
 // --- handleReport tests ---
@@ -397,6 +517,49 @@ func TestHandleAddWebhook_InvalidURL(t *testing.T) {
 
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for non-http URL, got %d", rr.Code)
+	}
+}
+
+func TestHandleAddWebhook_Success(t *testing.T) {
+	app, mock := testAppWithDB(t)
+	defer mock.Close()
+
+	body, _ := json.Marshal(map[string]string{"url": "http://example.com/hook", "event": "update_success"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks", bytes.NewReader(body))
+	req = req.WithContext(context.WithValue(req.Context(), middleware.PrincipalContextKey, &session.Principal{Username: "admin", UserID: 1}))
+
+	mock.ExpectExec(`INSERT INTO webhooks`).
+		WithArgs("http://example.com/hook", "update_success").
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+
+	mock.ExpectExec(`INSERT INTO audit_log`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+
+	rr := httptest.NewRecorder()
+	app.handleAddWebhook(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Errorf("expected 201, got %d", rr.Code)
+	}
+}
+
+func TestHandleAddWebhook_DBError(t *testing.T) {
+	app, mock := testAppWithDB(t)
+	defer mock.Close()
+
+	body, _ := json.Marshal(map[string]string{"url": "http://example.com/hook", "event": "update_success"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks", bytes.NewReader(body))
+
+	mock.ExpectExec(`INSERT INTO webhooks`).
+		WithArgs("http://example.com/hook", "update_success").
+		WillReturnError(sql.ErrConnDone)
+
+	rr := httptest.NewRecorder()
+	app.handleAddWebhook(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d", rr.Code)
 	}
 }
 
@@ -492,6 +655,110 @@ func TestHandleDeleteHost_InvalidID(t *testing.T) {
 
 // --- runs endpoint validation ---
 
+func TestHandleListRuns_Success(t *testing.T) {
+	app, mock := testAppWithDB(t)
+	defer mock.Close()
+
+	now := time.Now()
+	rows := mock.NewRows([]string{"id", "host_id", "run_group_id", "triggered_by", "kind", "status", "exit_code", "started_at", "finished_at", "output", "error"}).
+		AddRow(int32(1), int32(10), nil, "admin", models.RunKindUpdate, models.RunStatusRunning, nil, now, nil, "", nil)
+
+	mock.ExpectQuery(`SELECT (.+) FROM update_runs WHERE host_id = \$1 ORDER BY started_at DESC LIMIT \$2`).
+		WithArgs(int32(10), 50).
+		WillReturnRows(rows)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/hosts/10/runs", nil)
+	req = mux.SetURLVars(req, map[string]string{"id": "10"})
+	rr := httptest.NewRecorder()
+	app.handleListRuns(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rr.Code)
+	}
+
+	// With limit and cap
+	rows2 := mock.NewRows([]string{"id", "host_id", "run_group_id", "triggered_by", "kind", "status", "exit_code", "started_at", "finished_at", "output", "error"}).
+		AddRow(int32(2), int32(10), nil, "admin", models.RunKindUpdate, models.RunStatusRunning, nil, now, nil, "", nil)
+
+	mock.ExpectQuery(`SELECT (.+) FROM update_runs WHERE host_id = \$1 ORDER BY started_at DESC LIMIT \$2`).
+		WithArgs(int32(10), 50).
+		WillReturnRows(rows2)
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/hosts/10/runs?limit=999", nil)
+	req = mux.SetURLVars(req, map[string]string{"id": "10"})
+	rr = httptest.NewRecorder()
+	app.handleListRuns(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200 for limit 999, got %d", rr.Code)
+	}
+}
+
+func TestHandleListRunsByGroup_Success(t *testing.T) {
+	app, mock := testAppWithDB(t)
+	defer mock.Close()
+
+	now := time.Now()
+	rows := mock.NewRows([]string{"id", "host_id", "run_group_id", "triggered_by", "kind", "status", "exit_code", "started_at", "finished_at", "output", "error"}).
+		AddRow(int32(1), int32(10), "12345678-1234-1234-1234-123456789012", "admin", models.RunKindUpdate, models.RunStatusRunning, nil, now, nil, "", nil)
+
+	mock.ExpectQuery(`SELECT (.+) FROM update_runs WHERE run_group_id = \$1 ORDER BY host_id`).
+		WithArgs("12345678-1234-1234-1234-123456789012").
+		WillReturnRows(rows)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/group?group_id=12345678-1234-1234-1234-123456789012", nil)
+	rr := httptest.NewRecorder()
+	app.handleListRunsByGroup(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rr.Code)
+	}
+
+	// Invalid UUID format
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/runs/group?group_id=bad", nil)
+	rr = httptest.NewRecorder()
+	app.handleListRunsByGroup(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for bad UUID, got %d", rr.Code)
+	}
+}
+
+func TestHandleListRunsByGroup_DBError(t *testing.T) {
+	app, mock := testAppWithDB(t)
+	defer mock.Close()
+
+	mock.ExpectQuery(`SELECT (.+) FROM update_runs WHERE run_group_id = \$1 ORDER BY host_id`).
+		WithArgs("12345678-1234-1234-1234-123456789012").
+		WillReturnError(sql.ErrConnDone)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/group?group_id=12345678-1234-1234-1234-123456789012", nil)
+	rr := httptest.NewRecorder()
+	app.handleListRunsByGroup(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d", rr.Code)
+	}
+}
+
+func TestHandleListRuns_DBError(t *testing.T) {
+	app, mock := testAppWithDB(t)
+	defer mock.Close()
+
+	mock.ExpectQuery(`SELECT (.+) FROM update_runs WHERE host_id = \$1 ORDER BY started_at DESC LIMIT \$2`).
+		WithArgs(int32(10), 50).
+		WillReturnError(sql.ErrConnDone)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/hosts/10/runs", nil)
+	req = mux.SetURLVars(req, map[string]string{"id": "10"})
+	rr := httptest.NewRecorder()
+	app.handleListRuns(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d", rr.Code)
+	}
+}
+
 func TestHandleListRuns_InvalidID(t *testing.T) {
 	app := testApp(t)
 
@@ -504,6 +771,64 @@ func TestHandleListRuns_InvalidID(t *testing.T) {
 	}
 }
 
+func TestHandleGetRun_Success(t *testing.T) {
+	app, mock := testAppWithDB(t)
+	defer mock.Close()
+
+	now := time.Now()
+	rows := mock.NewRows([]string{"id", "host_id", "run_group_id", "triggered_by", "kind", "status", "exit_code", "started_at", "finished_at", "output", "error"}).
+		AddRow(int32(1), int32(10), nil, "admin", models.RunKindUpdate, models.RunStatusRunning, nil, now, nil, "", nil)
+
+	mock.ExpectQuery(`SELECT (.+) FROM update_runs WHERE id = \$1`).
+		WithArgs(int32(1)).
+		WillReturnRows(rows)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/1", nil)
+	req = mux.SetURLVars(req, map[string]string{"id": "1"})
+	rr := httptest.NewRecorder()
+	app.handleGetRun(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rr.Code)
+	}
+}
+
+func TestHandleGetRun_NotFound(t *testing.T) {
+	app, mock := testAppWithDB(t)
+	defer mock.Close()
+
+	mock.ExpectQuery(`SELECT (.+) FROM update_runs WHERE id = \$1`).
+		WithArgs(int32(1)).
+		WillReturnError(pgx.ErrNoRows)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/1", nil)
+	req = mux.SetURLVars(req, map[string]string{"id": "1"})
+	rr := httptest.NewRecorder()
+	app.handleGetRun(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", rr.Code)
+	}
+}
+
+func TestHandleGetRun_DBError(t *testing.T) {
+	app, mock := testAppWithDB(t)
+	defer mock.Close()
+
+	mock.ExpectQuery(`SELECT (.+) FROM update_runs WHERE id = \$1`).
+		WithArgs(int32(1)).
+		WillReturnError(sql.ErrConnDone)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/1", nil)
+	req = mux.SetURLVars(req, map[string]string{"id": "1"})
+	rr := httptest.NewRecorder()
+	app.handleGetRun(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d", rr.Code)
+	}
+}
+
 func TestHandleGetRun_InvalidID(t *testing.T) {
 	app := testApp(t)
 
@@ -513,7 +838,17 @@ func TestHandleGetRun_InvalidID(t *testing.T) {
 	app.handleGetRun(rr, req)
 
 	if rr.Code != http.StatusBadRequest {
-		t.Errorf("expected 400, got %d", rr.Code)
+		t.Errorf("expected 400 for missing run id, got %d", rr.Code)
+	}
+
+	// With invalid integer
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/runs/abc", nil)
+	req = mux.SetURLVars(req, map[string]string{"id": "abc"})
+	rr = httptest.NewRecorder()
+	app.handleGetRun(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid run id, got %d", rr.Code)
 	}
 }
 
