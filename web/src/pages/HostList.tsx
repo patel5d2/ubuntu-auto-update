@@ -341,7 +341,7 @@ export function HostList() {
                   <td>
                     <StatusBadge status={status} title={host.error ?? undefined} />
                     {host.reboot_required && (
-                      <span className="tag-chip" style={{ background: '#fdecea', color: '#c0392b' }} title="Kernel/package update needs a reboot">
+                      <span className="badge-alert" title="Kernel/package update needs a reboot">
                         ⟳ reboot
                       </span>
                     )}

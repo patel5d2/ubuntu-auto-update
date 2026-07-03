@@ -5,6 +5,10 @@ import App from './App.tsx'
 // so a CDN stylesheet never loads in the production container.
 import '@picocss/pico/css/pico.min.css'
 import './shell.css'
+import { applyStoredTheme } from './theme'
+
+// Apply the saved theme before first paint so there's no light→dark flash.
+applyStoredTheme()
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

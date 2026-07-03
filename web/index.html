@@ -1,9 +1,16 @@
 <!DOCTYPE html>
-<html lang="en">
+<!-- Pin light theme: the app has no dark toggle, and pinning avoids a
+     half-styled mix when the OS is in dark mode. -->
+<html lang="en" data-theme="light">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Inter — allow-listed by the backend CSP (fonts.googleapis / gstatic).
+         Falls back to system-ui if it fails to load. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <title>Ubuntu Auto-Update</title>
   </head>
   <body>

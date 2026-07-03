@@ -278,7 +278,7 @@ export function HostDetail() {
               {host.kernel_version && <span><strong>Kernel:</strong> <code>{host.kernel_version}</code></span>}
               {host.agent_version && <span><strong>Agent:</strong> {host.agent_version}</span>}
               <span><strong>Updates available:</strong> {host.packages_available}</span>
-              {host.reboot_required && <span style={{ color: '#c0392b', fontWeight: 600 }}>⟳ Reboot required</span>}
+              {host.reboot_required && <span style={{ color: 'var(--bad)', fontWeight: 600 }}>⟳ Reboot required</span>}
             </div>
           )}
           {host.error && (

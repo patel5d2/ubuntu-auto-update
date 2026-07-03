@@ -1,19 +1,124 @@
-/* App shell: fixed sidebar + scrolling content. Pico handles typography and
-   controls; this file only adds the ops-console layout it lacks. */
+/* ---------------------------------------------------------------------------
+   Design tokens — "polished Pico" with light + dark themes.
+   Pico v1 (unprefixed --primary/--color/…) drives buttons/inputs/tables; we
+   override its tokens + our own custom tokens under both theme selectors so
+   the whole app flips with document.documentElement.dataset.theme.
+--------------------------------------------------------------------------- */
 
+/* --- LIGHT (default) --- */
+:root:not([data-theme="dark"]) {
+  --accent: #4f46e5;
+  --accent-strong: #4338ca;
+  --accent-soft: #eef0fd;
+
+  --page-bg: #f7f8fa;
+  --card-bg: #ffffff;
+  --surface-2: #fafbfc;   /* table headers, striped/hover raised surfaces */
+  --hover-bg: #f2f3f7;
+  --border: #e6e8ec;
+  --ink: #1f2430;
+  --ink-muted: #6b7280;
+  --good: #16a34a;
+  --bad: #dc2626;
+
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.05), 0 1px 3px rgba(16, 24, 40, 0.06);
+  --shadow-md: 0 4px 12px rgba(16, 24, 40, 0.08), 0 2px 4px rgba(16, 24, 40, 0.05);
+
+  --primary-inverse: #fff;
+}
+
+/* --- DARK --- */
+[data-theme="dark"] {
+  --accent: #818cf8;         /* lighter indigo so links/active read on dark */
+  --accent-strong: #a5b4fc;
+  --accent-soft: rgba(129, 140, 248, 0.16);
+
+  --page-bg: #0e1116;
+  --card-bg: #161b22;
+  --surface-2: #1b212b;
+  --hover-bg: #1f2731;
+  --border: #2b323d;
+  --ink: #e6e9ef;
+  --ink-muted: #9aa4b2;
+  --good: #4ade80;
+  --bad: #f87171;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 6px 16px rgba(0, 0, 0, 0.5);
+
+  --primary-inverse: #0e1116; /* dark text on the light-indigo button */
+}
+
+/* --- Pico v1 var mapping (shared; resolves via the theme tokens above) --- */
+:root:not([data-theme="dark"]),
+[data-theme="dark"] {
+  --font-family: "Inter", system-ui, -apple-system, "Segoe UI",
+    Roboto, Helvetica, Arial, sans-serif;
+  --line-height: 1.55;
+  --border-radius: 0.55rem;
+
+  --background-color: var(--page-bg);
+  --color: var(--ink);
+  --muted-color: var(--ink-muted);
+  --muted-border-color: var(--border);
+
+  --h1-color: var(--ink);
+  --h2-color: var(--ink);
+  --h3-color: var(--ink);
+  --h4-color: var(--ink);
+
+  --card-background-color: var(--card-bg);
+  --card-border-color: var(--border);
+  --card-box-shadow: var(--shadow-sm);
+  --card-sectioning-background-color: var(--surface-2);
+
+  --primary: var(--accent);
+  --primary-hover: var(--accent-strong);
+  --primary-focus: color-mix(in srgb, var(--accent) 28%, transparent);
+
+  --form-element-border-color: var(--border);
+  --form-element-active-border-color: var(--accent);
+  --form-element-focus-color: color-mix(in srgb, var(--accent) 25%, transparent);
+
+  --table-border-color: var(--border);
+}
+
+/* Tighter, more confident headings than Pico's defaults. */
+.content h2 {
+  font-size: 1.55rem;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  margin: 0 0 1.25rem;
+}
+.content h3 {
+  font-size: 1.15rem;
+  font-weight: 640;
+  letter-spacing: -0.01em;
+  margin: 0 0 0.75rem;
+}
+.content h4 {
+  font-size: 0.95rem;
+  font-weight: 640;
+  color: var(--ink);
+  margin: 0 0 0.6rem;
+}
+
+/* ---------------------------------------------------------------------------
+   App shell: fixed sidebar + scrolling content.
+--------------------------------------------------------------------------- */
 .shell {
   display: flex;
   min-height: 100vh;
 }
 
 .sidebar {
-  width: 13rem;
+  width: 15rem;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  padding: 1rem 0.75rem;
-  border-right: 1px solid var(--pico-muted-border-color, #e0e0e0);
-  background: var(--pico-card-background-color, #fff);
+  padding: 1.25rem 0.85rem;
+  border-right: 1px solid var(--border);
+  background: var(--card-bg);
   position: sticky;
   top: 0;
   /* min-height (not height) so a short viewport can't clip the footer, which
@@ -23,8 +128,22 @@
 
 .sidebar .brand {
   font-weight: 700;
-  font-size: 1.05rem;
-  padding: 0.25rem 0.5rem 1rem;
+  font-size: 1rem;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  padding: 0.25rem 0.5rem 1.25rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+/* Accent dot before the brand name. */
+.sidebar .brand::before {
+  content: "";
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
 }
 
 .sidebar nav {
@@ -34,20 +153,25 @@
 }
 
 .sidebar nav a {
-  display: block;
-  padding: 0.45rem 0.6rem;
-  border-radius: 0.4rem;
+  display: flex;
+  align-items: center;
+  padding: 0.5rem 0.7rem;
+  border-radius: 0.5rem;
   text-decoration: none;
-  color: inherit;
+  color: var(--ink-muted);
+  font-weight: 500;
+  font-size: 0.92rem;
+  transition: background 0.12s ease, color 0.12s ease;
 }
 
 .sidebar nav a:hover {
-  background: var(--pico-secondary-focus, rgba(0, 0, 0, 0.06));
+  background: var(--hover-bg);
+  color: var(--ink);
 }
 
 .sidebar nav a.active {
-  background: var(--pico-primary-focus, rgba(16, 149, 193, 0.15));
-  color: var(--pico-primary, #1095c1);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
   font-weight: 600;
 }
 
@@ -55,23 +179,43 @@
   margin-top: auto;
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
-  padding: 0.5rem;
-  font-size: 0.85rem;
+  gap: 0.5rem;
+  padding: 0.75rem 0.5rem 0.25rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.83rem;
+  color: var(--ink-muted);
+}
+
+/* Theme toggle — ghost button, sits in the sidebar footer. */
+.theme-toggle {
+  width: auto;
+  align-self: flex-start;
+  padding: 0.3rem 0.6rem;
+  margin: 0;
+  font-size: 0.82rem;
+  background: transparent;
+  color: var(--ink-muted);
+  border: 1px solid var(--border);
+  box-shadow: none;
+}
+.theme-toggle:hover {
+  background: var(--hover-bg);
+  color: var(--ink);
+  border-color: var(--border);
 }
 
 .content {
   flex: 1;
   min-width: 0;
-  padding: 1.5rem 2rem;
-  max-width: 72rem;
+  padding: 2rem 2.5rem;
+  max-width: 74rem;
 }
 
 @media (max-width: 768px) {
   .shell { flex-direction: column; }
   /* flex-wrap + gap so brand + nav + footer don't collide on one row on a
-     narrow phone — this was the reported overlap. min-height must reset too,
-     or the horizontal bar keeps a full-screen height. */
+     narrow phone. min-height must reset too, or the horizontal bar keeps a
+     full-screen height. */
   .sidebar {
     width: 100%;
     min-height: auto;
@@ -80,54 +224,118 @@
     align-items: center;
     flex-wrap: wrap;
     gap: 0.5rem 1rem;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
   }
   .sidebar .brand { padding-bottom: 0.25rem; }
   .sidebar nav { flex-direction: row; flex-wrap: wrap; }
-  .sidebar-footer { margin-top: 0; margin-left: auto; flex-direction: row; align-items: center; }
+  .sidebar-footer { margin-top: 0; margin-left: auto; flex-direction: row; align-items: center; border-top: none; padding-top: 0; }
+  .content { padding: 1.25rem; }
 }
 
-/* Overview stat cards */
+/* ---------------------------------------------------------------------------
+   Overview stat cards
+--------------------------------------------------------------------------- */
 .stat-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
-  gap: 0.75rem;
-  margin-bottom: 1.5rem;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: 1rem;
+  margin-bottom: 2rem;
 }
 
 .stat-card {
-  padding: 0.9rem 1rem;
-  border-radius: 0.5rem;
-  background: var(--pico-card-background-color, #fff);
-  border: 1px solid var(--pico-muted-border-color, #e0e0e0);
+  padding: 1.1rem 1.2rem;
+  border-radius: 0.75rem;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
+}
+.stat-card:hover {
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
 }
 
 .stat-card .stat-value {
-  font-size: 1.8rem;
+  font-size: 2rem;
   font-weight: 700;
-  line-height: 1.2;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  color: var(--ink);
 }
 
 .stat-card .stat-label {
-  font-size: 0.8rem;
-  color: var(--pico-muted-color, #777);
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-muted);
+  margin-top: 0.25rem;
 }
 
-.stat-card.stat-bad .stat-value { color: #d32f2f; }
-.stat-card.stat-good .stat-value { color: #2e7d32; }
+.stat-card.stat-bad .stat-value { color: var(--bad); }
+.stat-card.stat-good .stat-value { color: var(--good); }
 
-/* Tag chips */
+/* ---------------------------------------------------------------------------
+   Tables — lighter, with row hover
+--------------------------------------------------------------------------- */
+.content table {
+  border-radius: 0.6rem;
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--border);
+}
+.content thead th {
+  background: var(--surface-2);
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-muted);
+}
+.content tbody tr {
+  transition: background 0.1s ease;
+}
+.content tbody tr:hover {
+  background: var(--hover-bg);
+}
+
+/* ---------------------------------------------------------------------------
+   Chips & badges
+--------------------------------------------------------------------------- */
 .tag-chip {
   display: inline-block;
-  padding: 0.05rem 0.5rem;
+  padding: 0.1rem 0.55rem;
   margin: 0 0.25rem 0.15rem 0;
-  border-radius: 1rem;
-  font-size: 0.75rem;
-  background: var(--pico-primary-focus, rgba(16, 149, 193, 0.15));
-  color: var(--pico-primary, #1095c1);
+  border-radius: 999px;
+  font-size: 0.73rem;
+  font-weight: 500;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
   cursor: pointer;
   white-space: nowrap;
+  transition: opacity 0.12s ease;
 }
+.tag-chip:hover { opacity: 0.8; }
 .tag-chip.active {
-  background: var(--pico-primary, #1095c1);
-  color: #fff;
+  background: var(--accent);
+  color: var(--primary-inverse);
+}
+
+/* Semantic alert pill (reboot-required, etc.) — adapts to theme via --bad. */
+.badge-alert {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+  background: color-mix(in srgb, var(--bad) 16%, transparent);
+  color: var(--bad);
+}
+
+/* Primary buttons get a subtle lift so they read as the main action. */
+button:not(.secondary):not(.contrast):not([aria-label]):not(.theme-toggle) {
+  box-shadow: var(--shadow-sm);
 }

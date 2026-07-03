@@ -10,12 +10,17 @@ interface StatusBadgeProps {
   title?: string;
 }
 
+// Colors come from the theme token layer (shell.css) via color-mix so the
+// pills render in both light and dark. The previous --pico-color-* names were
+// Pico v2 tokens that don't exist in this v1 project, so pills had no fill.
+const mix = (token: string, pct: number) => `color-mix(in srgb, var(${token}) ${pct}%, transparent)`;
+
 const PALETTE: Record<HostStatus, { bg: string; fg: string; defaultLabel: string }> = {
-  online:   { bg: 'var(--pico-color-green-100)',  fg: 'var(--pico-color-green-700)',  defaultLabel: 'Online' },
-  updating: { bg: 'var(--pico-color-azure-100)',  fg: 'var(--pico-color-azure-700)',  defaultLabel: 'Updating' },
-  offline:  { bg: 'var(--pico-color-grey-150)',   fg: 'var(--pico-color-grey-700)',   defaultLabel: 'Offline' },
-  error:    { bg: 'var(--pico-color-red-100)',    fg: 'var(--pico-color-red-700)',    defaultLabel: 'Error' },
-  unknown:  { bg: 'var(--pico-color-grey-150)',   fg: 'var(--pico-color-grey-600)',   defaultLabel: 'Unknown' },
+  online:   { bg: mix('--good', 15),       fg: 'var(--good)',       defaultLabel: 'Online' },
+  updating: { bg: mix('--accent', 15),     fg: 'var(--accent-strong)', defaultLabel: 'Updating' },
+  offline:  { bg: mix('--ink-muted', 15),  fg: 'var(--ink-muted)',  defaultLabel: 'Offline' },
+  error:    { bg: mix('--bad', 15),        fg: 'var(--bad)',        defaultLabel: 'Error' },
+  unknown:  { bg: mix('--ink-muted', 15),  fg: 'var(--ink-muted)',  defaultLabel: 'Unknown' },
 };
 
 /**
