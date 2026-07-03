@@ -145,4 +145,3 @@ func decodePayload(payload string) (Event, error) {
 	}
 	return ev, nil
 }
-

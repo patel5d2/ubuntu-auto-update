@@ -21,10 +21,11 @@ import (
 // handleBulkEnroll lets an operator enroll many hosts in one request.
 //
 // Request body:
-//   { "hosts": [ {"hostname": "...", "ssh_user": "...", "password": "..."},
-//                 ... ],
-//     "concurrency": 4,           // optional, default 4, max 8
-//     "sudo_scope":  "apt|full" } // optional, default apt
+//
+//	{ "hosts": [ {"hostname": "...", "ssh_user": "...", "password": "..."},
+//	              ... ],
+//	  "concurrency": 4,           // optional, default 4, max 8
+//	  "sudo_scope":  "apt|full" } // optional, default apt
 //
 // Each host runs the same one-shot bootstrap flow handleCreateHost uses
 // (password SSH → install key → configure sudo → store encrypted key). Per-host
@@ -173,9 +174,9 @@ func (app *Application) handleBulkEnroll(w http.ResponseWriter, r *http.Request)
 		w.WriteHeader(http.StatusMultiStatus)
 	}
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"results":         results,
-		"success_count":   success,
-		"failure_count":   failure,
+		"results":       results,
+		"success_count": success,
+		"failure_count": failure,
 	})
 }
 

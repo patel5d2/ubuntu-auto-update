@@ -101,7 +101,7 @@ scripts/    build.sh, test.sh wrappers for all three components
 | GET    | `/api/v1/hosts`                                   | bearer      | List all hosts |
 | POST   | `/api/v1/hosts`                                   | bearer      | Operator-create a host (no agent) |
 | GET    | `/api/v1/hosts/{id}`                              | bearer      | Host detail |
-| PATCH  | `/api/v1/hosts/{id}`                              | bearer      | Edit `ssh_user` |
+| PATCH  | `/api/v1/hosts/{id}`                              | bearer      | Edit `ssh_user` and/or `tags` |
 | DELETE | `/api/v1/hosts/{id}`                              | bearer      | Delete host (requires `X-Confirm-Hostname`) |
 | POST   | `/api/v1/hosts/{id}/ssh-key`                      | bearer      | Store encrypted SSH key |
 | POST   | `/api/v1/hosts/{id}/test-connection`              | bearer      | Probe SSH + sudo, return latency |
@@ -114,6 +114,11 @@ scripts/    build.sh, test.sh wrappers for all three components
 | GET    | `/api/v1/runs/{id}`                               | bearer      | Single run record + full output |
 | GET    | `/api/v1/events` (WebSocket)                      | bearer      | Multiplexed real-time channel (`{table, op, id}`) |
 | POST   | `/api/v1/webhooks`                                | bearer      | Subscribe to events |
+| GET    | `/api/v1/overview`                                | bearer      | Fleet stats for the dashboard landing page |
+| GET    | `/api/v1/schedules`                               | bearer      | List recurring update schedules |
+| POST   | `/api/v1/schedules`                               | bearer      | Create a schedule (`name`, `host_ids`, `interval_minutes`, optional `start_at`) |
+| PATCH  | `/api/v1/schedules/{id}`                          | bearer      | Enable/disable a schedule |
+| DELETE | `/api/v1/schedules/{id}`                          | bearer      | Delete a schedule |
 
 The events WebSocket is fed by a Postgres `LISTEN` goroutine and a `pg_notify`
 trigger on `hosts` and `update_runs` (migration 000012). The browser opens

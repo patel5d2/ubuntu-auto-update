@@ -1,8 +1,0 @@
-/Users/dharminpatel/ubuntu-auto-update/agent/target/debug/deps/percent_encoding-6c11b9209cfd023d.d: /Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/percent-encoding-2.3.2/src/lib.rs /Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/percent-encoding-2.3.2/src/ascii_set.rs
-
-/Users/dharminpatel/ubuntu-auto-update/agent/target/debug/deps/libpercent_encoding-6c11b9209cfd023d.rlib: /Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/percent-encoding-2.3.2/src/lib.rs /Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/percent-encoding-2.3.2/src/ascii_set.rs
-
-/Users/dharminpatel/ubuntu-auto-update/agent/target/debug/deps/libpercent_encoding-6c11b9209cfd023d.rmeta: /Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/percent-encoding-2.3.2/src/lib.rs /Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/percent-encoding-2.3.2/src/ascii_set.rs
-
-/Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/percent-encoding-2.3.2/src/lib.rs:
-/Users/dharminpatel/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/percent-encoding-2.3.2/src/ascii_set.rs:

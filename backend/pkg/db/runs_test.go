@@ -245,7 +245,7 @@ func TestListRunsForHost(t *testing.T) {
 	mock.ExpectQuery(`SELECT (.+) FROM update_runs WHERE host_id = \$1 ORDER BY started_at DESC LIMIT \$2`).
 		WithArgs(int32(10), 50).
 		WillReturnRows(mock.NewRows([]string{"id", "host_id", "run_group_id", "triggered_by", "kind", "status", "exit_code", "started_at", "finished_at", "output", "error"}))
-	
+
 	_, err = db.ListRunsForHost(context.Background(), mock, 10, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

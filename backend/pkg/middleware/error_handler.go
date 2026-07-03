@@ -1,7 +1,10 @@
 package middleware
 
 import (
+	"bufio"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"runtime/debug"
 	"time"
@@ -61,6 +64,18 @@ type responseWriter struct {
 func (rw *responseWriter) WriteHeader(code int) {
 	rw.statusCode = code
 	rw.ResponseWriter.WriteHeader(code)
+}
+
+// Hijack forwards to the underlying writer so WebSocket upgrades work
+// through this middleware. Embedding only forwards http.ResponseWriter's
+// method set — without this, gorilla/websocket fails with "response does
+// not implement http.Hijacker".
+func (rw *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := rw.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("underlying ResponseWriter does not support hijacking")
+	}
+	return h.Hijack()
 }
 
 // SendErrorResponse sends a standardized error response

@@ -24,12 +24,12 @@ import (
 // passwordless sudo couldn't be set up (e.g. an /etc/sudoers.d/ already
 // pinned the user to a different rule).
 type BootstrapResult struct {
-	PrivateKeyPEM     string
-	AuthorizedKey     string
-	HostKey           gossh.PublicKey
+	PrivateKeyPEM      string
+	AuthorizedKey      string
+	HostKey            gossh.PublicKey
 	HostKeyFingerprint string
-	SudoConfigured    bool
-	SudoScope         string
+	SudoConfigured     bool
+	SudoScope          string
 }
 
 // BootstrapOptions tunes what Bootstrap configures on the remote host. Empty
@@ -47,14 +47,14 @@ type BootstrapOptions struct {
 // authorizedKeyMarker is appended as the SSH-key comment field on every
 // uau-installed authorized_keys entry. It serves two purposes:
 //
-//   1. Operators auditing ~/.ssh/authorized_keys can see at a glance which
-//      lines came from this tool.
-//   2. RotateKey uses the marker as the search key when stripping prior
-//      uau-installed keys after a successful rotation. Without this marker
-//      MarshalAuthorizedKey produces a bare "ssh-ed25519 BASE64" line with
-//      no distinguishing field, and rotation cannot tell which lines to
-//      revoke. Don't change the literal without also updating the awk in
-//      RotateKey.
+//  1. Operators auditing ~/.ssh/authorized_keys can see at a glance which
+//     lines came from this tool.
+//  2. RotateKey uses the marker as the search key when stripping prior
+//     uau-installed keys after a successful rotation. Without this marker
+//     MarshalAuthorizedKey produces a bare "ssh-ed25519 BASE64" line with
+//     no distinguishing field, and rotation cannot tell which lines to
+//     revoke. Don't change the literal without also updating the awk in
+//     RotateKey.
 const authorizedKeyMarker = "ubuntu-auto-update"
 
 // formatAuthorizedKey renders a public key as the canonical authorized_keys
@@ -73,21 +73,24 @@ func scopedSudoersBody(user, scope string) string {
 	case "full":
 		return fmt.Sprintf("%s ALL=(ALL) NOPASSWD: ALL\n", user)
 	default:
-		// Default to "apt" — the safer choice.
-		return fmt.Sprintf("%s ALL=(ALL) NOPASSWD: /usr/bin/apt, /usr/bin/apt-get, /usr/bin/unattended-upgrade\n", user)
+		// Default to "apt" — the safer choice. SETENV is required because the
+		// update runner invokes `sudo -n DEBIAN_FRONTEND=noninteractive
+		// apt-get …`; without it sudo rejects the env assignment even though
+		// apt-get itself is allowed.
+		return fmt.Sprintf("%s ALL=(ALL) NOPASSWD:SETENV: /usr/bin/apt, /usr/bin/apt-get, /usr/bin/unattended-upgrade\n", user)
 	}
 }
 
 // Bootstrap runs the one-shot enrollment dance against a host:
-//   1. SSH in with password auth, capturing the host key (TOFU).
-//   2. Generate a fresh ed25519 keypair.
-//   3. Append the public key to ~/.ssh/authorized_keys.
-//   4. For non-root users, write a sudoers drop-in granting passwordless
-//      sudo, and verify with `visudo -cf` so a syntax error doesn't lock
-//      the operator out.
-//   5. Reconnect using the new key (no password) and confirm sudo -n
-//      works. Returning success is proof the rest of the system can SSH
-//      to this host without ever seeing the password again.
+//  1. SSH in with password auth, capturing the host key (TOFU).
+//  2. Generate a fresh ed25519 keypair.
+//  3. Append the public key to ~/.ssh/authorized_keys.
+//  4. For non-root users, write a sudoers drop-in granting passwordless
+//     sudo, and verify with `visudo -cf` so a syntax error doesn't lock
+//     the operator out.
+//  5. Reconnect using the new key (no password) and confirm sudo -n
+//     works. Returning success is proof the rest of the system can SSH
+//     to this host without ever seeing the password again.
 //
 // The password is held only in memory for the duration of this call and
 // never logged or persisted. Stdin pipes are constructed so the password
@@ -230,7 +233,10 @@ chmod 600 "$HOME/.ssh/authorized_keys"
 		if err != nil {
 			return BootstrapResult{}, fmt.Errorf("verify session: %w", err)
 		}
-		err = s.Run("sudo -n true")
+		// Verify with a command the scope actually grants. `sudo -n true`
+		// always fails under the apt scope (true isn't in the NOPASSWD list),
+		// which made every non-root apt-scoped bootstrap fail its own check.
+		err = s.Run(sudoProbeCmd)
 		s.Close()
 		if err != nil {
 			return BootstrapResult{}, fmt.Errorf("verify passwordless sudo: %w", err)
@@ -468,7 +474,7 @@ func sanitizeForFilename(s string) string {
 }
 
 // shellQuote produces a single-quoted shell literal that's safe to embed
-// in any POSIX shell. The escape inside quotes is `'\''` — close, escaped
+// in any POSIX shell. The escape inside quotes is `'\”` — close, escaped
 // single quote, reopen.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"

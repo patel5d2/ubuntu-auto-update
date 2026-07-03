@@ -96,6 +96,8 @@ export function AddHostModal({ open, onClose, onCreated }: AddHostModalProps) {
         hint = 'The backend container cannot reach this host. Check the IP/hostname and any firewalls between them.';
       } else if (lower.includes('verify passwordless sudo')) {
         hint = 'Sudo did not configure passwordlessly. Either run as root, or pre-configure /etc/sudoers.d/ on the host.';
+      } else if (lower.includes('already exists')) {
+        hint = 'The host is already registered — check the host list (clear any search/status filters, or reload the page). Delete it there first if you want to re-enroll it.';
       }
       setSubmitError({ message, hint });
       toast.show(message, 'error');

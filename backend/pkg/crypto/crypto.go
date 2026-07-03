@@ -13,12 +13,12 @@ import (
 
 // Key sourcing precedence (first non-empty wins):
 //
-//   1. ENCRYPTION_KEY    — hex-encoded 16/24/32-byte key in the environment.
-//                          Use this for KMS-injected secrets so the key never
-//                          touches the filesystem.
-//   2. ENCRYPTION_KEY_FILE — path to a binary file holding the raw key.
-//                            Default for local dev / docker-volume deployments.
-//   3. encryption.key     — process working-directory fallback for old configs.
+//  1. ENCRYPTION_KEY    — hex-encoded 16/24/32-byte key in the environment.
+//     Use this for KMS-injected secrets so the key never
+//     touches the filesystem.
+//  2. ENCRYPTION_KEY_FILE — path to a binary file holding the raw key.
+//     Default for local dev / docker-volume deployments.
+//  3. encryption.key     — process working-directory fallback for old configs.
 //
 // Once a key is loaded it is cached for the life of the process; rotating
 // the key requires a restart. That trade is fine because rotating means

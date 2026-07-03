@@ -28,16 +28,16 @@ const (
 )
 
 type UpdateRun struct {
-	ID          int32         `json:"id"           db:"id"`
-	HostID      int32         `json:"host_id"      db:"host_id"`
+	ID          int32          `json:"id"           db:"id"`
+	HostID      int32          `json:"host_id"      db:"host_id"`
 	RunGroupID  sql.NullString `json:"-"           db:"run_group_id"`
-	TriggeredBy string        `json:"triggered_by" db:"triggered_by"`
-	Kind        RunKind       `json:"kind"         db:"kind"`
-	Status      RunStatus     `json:"status"       db:"status"`
-	ExitCode    sql.NullInt32 `json:"-"            db:"exit_code"`
-	StartedAt   time.Time     `json:"started_at"   db:"started_at"`
-	FinishedAt  sql.NullTime  `json:"-"            db:"finished_at"`
-	Output      string        `json:"output"       db:"output"`
+	TriggeredBy string         `json:"triggered_by" db:"triggered_by"`
+	Kind        RunKind        `json:"kind"         db:"kind"`
+	Status      RunStatus      `json:"status"       db:"status"`
+	ExitCode    sql.NullInt32  `json:"-"            db:"exit_code"`
+	StartedAt   time.Time      `json:"started_at"   db:"started_at"`
+	FinishedAt  sql.NullTime   `json:"-"            db:"finished_at"`
+	Output      string         `json:"output"       db:"output"`
 	Error       sql.NullString `json:"-"           db:"error"`
 }
 

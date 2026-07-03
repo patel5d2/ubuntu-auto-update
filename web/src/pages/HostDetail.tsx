@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { apiDelete, apiGet, apiPost, createWebSocket } from '../api';
+import { apiDelete, apiGet, apiPatch, apiPost, createWebSocket } from '../api';
 import type { Host, TestConnectionResult, UpdateRun } from '../types';
 import { useToast } from '../components/Toast';
 import { useConfirm } from '../components/ConfirmDialog';
@@ -22,8 +22,12 @@ export function HostDetail() {
   const [testing, setTesting] = useState(false);
 
   // Live-run state. Driven by the websocket while a preview/update is active.
+  // lastKind keeps the finished output on screen after the socket closes —
+  // previously the panel unmounted the instant the stream ended, so a fast
+  // run looked like "nothing happened".
   const [liveLines, setLiveLines] = useState<string[]>([]);
   const [liveKind, setLiveKind] = useState<'preview' | 'update' | null>(null);
+  const [lastKind, setLastKind] = useState<'preview' | 'update' | null>(null);
   const liveSocketRef = useRef<WebSocket | null>(null);
 
   const toast = useToast();
@@ -53,6 +57,7 @@ export function HostDetail() {
   const startStream = (kind: 'preview' | 'update') => {
     if (!hostId || liveSocketRef.current) return;
     setLiveKind(kind);
+    setLastKind(kind);
     setLiveLines([]);
 
     const path =
@@ -266,6 +271,16 @@ export function HostDetail() {
 
       {tab === 'overview' && (
         <section role="tabpanel" id="panel-overview" aria-labelledby="tab-overview">
+          <TagEditor host={host} onSaved={setHost} />
+          {(host.os_version || host.kernel_version || host.agent_version) && (
+            <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap', margin: '0 0 1rem', fontSize: '0.9rem' }}>
+              {host.os_version && <span><strong>OS:</strong> {host.os_version}</span>}
+              {host.kernel_version && <span><strong>Kernel:</strong> <code>{host.kernel_version}</code></span>}
+              {host.agent_version && <span><strong>Agent:</strong> {host.agent_version}</span>}
+              <span><strong>Updates available:</strong> {host.packages_available}</span>
+              {host.reboot_required && <span style={{ color: '#c0392b', fontWeight: 600 }}>⟳ Reboot required</span>}
+            </div>
+          )}
           {host.error && (
             <article style={{ borderLeft: '4px solid var(--pico-color-red-500)' }}>
               <strong>Last error</strong>
@@ -375,14 +390,31 @@ export function HostDetail() {
         </section>
       )}
 
-      {/* Live output overlay — visible whenever a stream is active. */}
-      {isStreaming && (
+      {/* Live output panel — stays visible after the stream finishes so the
+          result is readable; a new run resets it. */}
+      {lastKind !== null && (
         <article style={{ marginTop: '1.5rem', borderLeft: '4px solid var(--pico-color-azure-500)' }}>
           <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <strong>{liveKind === 'update' ? 'Live update output' : 'Live preview output'}</strong>
-            <span aria-busy="true">streaming…</span>
+            <strong>{lastKind === 'update' ? 'Update output' : 'Preview output'}</strong>
+            {isStreaming ? (
+              <span aria-busy="true">streaming…</span>
+            ) : (
+              <span style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+                <small>finished — full log saved in History</small>
+                <button
+                  type="button"
+                  className="secondary"
+                  style={{ width: 'auto', padding: '0.1rem 0.6rem' }}
+                  onClick={() => { setLastKind(null); setLiveLines([]); }}
+                >
+                  Dismiss
+                </button>
+              </span>
+            )}
           </header>
-          <pre style={{ maxHeight: '24rem', overflow: 'auto' }}><code>{liveLines.join('')}</code></pre>
+          <pre style={{ maxHeight: '24rem', overflow: 'auto' }}>
+            <code>{liveLines.length > 0 ? liveLines.join('') : 'Waiting for output…'}</code>
+          </pre>
         </article>
       )}
     </article>
@@ -451,4 +483,68 @@ function formatDuration(ms: number): string {
   const m = Math.floor(s / 60);
   const rs = s % 60;
   return `${m}m ${rs}s`;
+}
+
+// TagEditor: chips + comma-separated edit box. Tags drive filtering on the
+// host list and (eventually) schedule targeting.
+function TagEditor({ host, onSaved }: { host: Host; onSaved: (h: Host) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState('');
+  const [saving, setSaving] = useState(false);
+  const toast = useToast();
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const tags = value.split(',').map(t => t.trim()).filter(Boolean);
+      const updated = await apiPatch<Host>(`/api/v1/hosts/${host.id}`, { tags });
+      onSaved(updated);
+      setEditing(false);
+      toast.show('Tags saved.', 'success');
+    } catch (err) {
+      toast.show(err instanceof Error ? err.message : 'Failed to save tags.', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!editing) {
+    return (
+      <p style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+        <strong>Tags:</strong>
+        {(host.tags ?? []).length === 0 && <small>none</small>}
+        {(host.tags ?? []).map(t => (
+          <span key={t} className="tag-chip">{t}</span>
+        ))}
+        <button
+          type="button"
+          className="secondary"
+          style={{ width: 'auto', padding: '0.1rem 0.6rem' }}
+          onClick={() => {
+            setValue((host.tags ?? []).join(', '));
+            setEditing(true);
+          }}
+        >
+          Edit
+        </button>
+      </p>
+    );
+  }
+
+  return (
+    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginBottom: '1rem' }}>
+      <input
+        value={value}
+        onChange={e => setValue(e.target.value)}
+        placeholder="prod, web, us-east (comma-separated)"
+        style={{ flex: 1, marginBottom: 0 }}
+      />
+      <button type="button" onClick={save} disabled={saving} aria-busy={saving || undefined} style={{ width: 'auto' }}>
+        Save
+      </button>
+      <button type="button" className="secondary" onClick={() => setEditing(false)} style={{ width: 'auto' }}>
+        Cancel
+      </button>
+    </div>
+  );
 }

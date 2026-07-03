@@ -15,8 +15,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/sync/semaphore"
 	gossh "golang.org/x/crypto/ssh"
+	"golang.org/x/sync/semaphore"
 
 	"ubuntu-auto-update/backend/pkg/db"
 	"ubuntu-auto-update/backend/pkg/models"
@@ -46,12 +46,12 @@ const (
 //   - AbortOnFailurePct: if a non-zero fraction of *completed* hosts has
 //     failed, mark every remaining host failed without dialing it. 0 disables.
 type BulkRunOptions struct {
-	HostIDs            []int32
-	Concurrency        int
-	TriggeredBy        string
-	CanaryCount        int
-	CanaryWaitSeconds  int
-	AbortOnFailurePct  int
+	HostIDs           []int32
+	Concurrency       int
+	TriggeredBy       string
+	CanaryCount       int
+	CanaryWaitSeconds int
+	AbortOnFailurePct int
 }
 
 // BulkResult is what we hand back to the API caller. RunIDs is parallel to

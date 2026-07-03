@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	pathpkg "path"
@@ -35,6 +36,7 @@ import (
 	"ubuntu-auto-update/backend/pkg/events"
 	"ubuntu-auto-update/backend/pkg/middleware"
 	"ubuntu-auto-update/backend/pkg/models"
+	"ubuntu-auto-update/backend/pkg/scheduler"
 	"ubuntu-auto-update/backend/pkg/session"
 	sshpkg "ubuntu-auto-update/backend/pkg/ssh"
 	"ubuntu-auto-update/backend/pkg/updater"
@@ -46,17 +48,17 @@ import (
 const maxRequestBodySize = 1 << 20
 
 type Application struct {
-	DB             db.DBTX
-	TokenStore     *middleware.TokenStore // legacy in-memory store (tests + dev)
-	Sessions       session.Store          // production session store (DB-backed when DB available)
-	AuthConfig     *middleware.AuthConfig
-	CORS           *middleware.CORSConfig
-	IPAllowlist    *middleware.IPAllowlist
-	LoginLimiter   *middleware.LoginRateLimiter
-	SSHDialer      *sshpkg.Dialer
-	WebhookSender  *webhook.Dispatcher
-	BulkUpdater    *updater.Coordinator
-	EventBroker    *events.Broker
+	DB            db.DBTX
+	TokenStore    *middleware.TokenStore // legacy in-memory store (tests + dev)
+	Sessions      session.Store          // production session store (DB-backed when DB available)
+	AuthConfig    *middleware.AuthConfig
+	CORS          *middleware.CORSConfig
+	IPAllowlist   *middleware.IPAllowlist
+	LoginLimiter  *middleware.LoginRateLimiter
+	SSHDialer     *sshpkg.Dialer
+	WebhookSender *webhook.Dispatcher
+	BulkUpdater   *updater.Coordinator
+	EventBroker   *events.Broker
 }
 
 // dispatchWebhooks resolves subscribers for an event and queues deliveries.
@@ -199,6 +201,9 @@ func main() {
 	defer cancelListener()
 	go events.NewListener(dbPool, broker).Run(listenerCtx)
 
+	// Server-side schedule loop: fires due schedules as bulk update groups.
+	go scheduler.Run(listenerCtx, dbPool, app.BulkUpdater)
+
 	r := mux.NewRouter()
 	r.Use(middleware.PrometheusMiddleware) // request metrics (must be first)
 	r.Use(middleware.SecurityHeaders)      // defense-in-depth HTTP headers
@@ -241,6 +246,8 @@ func main() {
 	viewer.HandleFunc("/runs/{id}", app.handleGetRun).Methods(http.MethodGet)
 	viewer.HandleFunc("/events", events.Handler(broker, app.wsUpgrader(), app.Sessions)).Methods(http.MethodGet)
 	viewer.HandleFunc("/me", app.handleMe).Methods(http.MethodGet)
+	viewer.HandleFunc("/overview", app.handleOverview).Methods(http.MethodGet)
+	viewer.HandleFunc("/schedules", app.handleListSchedules).Methods(http.MethodGet)
 
 	// State-changing operations — operator+.
 	op := api.PathPrefix("").Subrouter()
@@ -263,7 +270,12 @@ func main() {
 	op.HandleFunc("/hosts/{id}/rotate-key", app.handleRotateKey).Methods(http.MethodPost)
 	op.HandleFunc("/hosts/bulk/enroll", app.handleBulkEnroll).Methods(http.MethodPost)
 	op.HandleFunc("/hosts/bulk/run-update", app.handleBulkRunUpdate).Methods(http.MethodPost)
+	op.HandleFunc("/webhooks", app.handleListWebhooks).Methods(http.MethodGet)
 	op.HandleFunc("/webhooks", app.handleAddWebhook).Methods(http.MethodPost)
+	op.HandleFunc("/webhooks/{id}", app.handleDeleteWebhook).Methods(http.MethodDelete)
+	op.HandleFunc("/schedules", app.handleCreateSchedule).Methods(http.MethodPost)
+	op.HandleFunc("/schedules/{id}", app.handleUpdateSchedule).Methods(http.MethodPatch)
+	op.HandleFunc("/schedules/{id}", app.handleDeleteSchedule).Methods(http.MethodDelete)
 
 	// Admin-only — user/audit management. CSRF mirrors the operator subrouter
 	// since these endpoints are equally state-changing (and equally cookie-
@@ -523,9 +535,30 @@ func (app *Application) handleReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Infof("Received report from host: %s", report.Hostname)
+	log.Infof("Received report from host: %s (agent %s)", report.Hostname, report.AgentVersion)
 
-	host, err := db.UpsertHost(r.Context(), app.DB, report.Hostname, "root", report.UpdateOutput, report.UpgradeOutput, "")
+	ur := report.UpdateResults
+	errMsg := ""
+	if ur.ErrorMessage != nil {
+		errMsg = *ur.ErrorMessage
+	}
+	// The agent folds all package-manager output into apt_output. Keep it in
+	// update_output; the SSH-run path is what populates upgrade_output.
+	//
+	// ssh_user is "root" only as the seed for a first insert; UpsertHost
+	// preserves an existing ssh_user on conflict, so agent reports no longer
+	// reset a host enrolled as a non-root user.
+	host, err := db.UpsertHost(r.Context(), app.DB, report.Hostname, "root", db.ReportData{
+		UpdateOutput:      ur.AptOutput,
+		UpgradeOutput:     "",
+		Error:             errMsg,
+		RebootRequired:    ur.RebootRequired,
+		PackagesUpdated:   ur.PackagesUpdated,
+		PackagesAvailable: ur.PackagesAvailable,
+		OsVersion:         report.SystemInfo.OsVersion,
+		KernelVersion:     report.SystemInfo.KernelVersion,
+		AgentVersion:      report.AgentVersion,
+	})
 	if err != nil {
 		log.Errorf("Failed to upsert host: %v", err)
 		writeJSONError(w, http.StatusInternalServerError, "Failed to process report")
@@ -653,7 +686,12 @@ func (app *Application) handleCreateHost(w http.ResponseWriter, r *http.Request)
 			log.Errorf("Auto-enroll rollback for host %d failed: %v (original: %v)", host.ID, delErr, bootstrapErr)
 		}
 		log.Warnf("Auto-enroll failed for %s: %v", req.Hostname, bootstrapErr)
-		writeJSONError(w, http.StatusBadGateway, "Auto-enrollment failed. Please check host credentials and network.")
+		// Bootstrap errors are pre-classified into safe, actionable strings
+		// (see bootstrap.classifyAuthErr) — the auto-configure endpoint
+		// already exposes them verbatim, so do the same here. The generic
+		// message this replaced left operators guessing between "wrong
+		// password" and "host unreachable".
+		writeJSONError(w, http.StatusBadGateway, "Auto-enrollment failed: "+bootstrapErr.Error())
 		return
 	}
 
@@ -697,31 +735,58 @@ func (app *Application) handleUpdateHost(w http.ResponseWriter, r *http.Request)
 	}
 
 	var req struct {
-		SshUser *string `json:"ssh_user,omitempty"`
+		SshUser *string   `json:"ssh_user,omitempty"`
+		Tags    *[]string `json:"tags,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
-	if req.SshUser == nil {
-		writeJSONError(w, http.StatusBadRequest, "Nothing to update; only ssh_user is editable")
-		return
-	}
-	sshUser := strings.TrimSpace(*req.SshUser)
-	if sshUser == "" {
-		writeJSONError(w, http.StatusBadRequest, "ssh_user cannot be empty")
+	if req.SshUser == nil && req.Tags == nil {
+		writeJSONError(w, http.StatusBadRequest, "Nothing to update; ssh_user and tags are editable")
 		return
 	}
 
-	host, err := db.UpdateHostSSHUser(r.Context(), app.DB, id, sshUser)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeJSONError(w, http.StatusNotFound, "Host not found")
+	var host models.Host
+	if req.SshUser != nil {
+		sshUser := strings.TrimSpace(*req.SshUser)
+		if sshUser == "" {
+			writeJSONError(w, http.StatusBadRequest, "ssh_user cannot be empty")
 			return
 		}
-		log.Errorf("Failed to update host: %v", err)
-		writeJSONError(w, http.StatusInternalServerError, "Failed to update host")
-		return
+		var err error
+		host, err = db.UpdateHostSSHUser(r.Context(), app.DB, id, sshUser)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeJSONError(w, http.StatusNotFound, "Host not found")
+				return
+			}
+			log.Errorf("Failed to update host: %v", err)
+			writeJSONError(w, http.StatusInternalServerError, "Failed to update host")
+			return
+		}
+	}
+	if req.Tags != nil {
+		// Normalise: trim, drop empties, cap length so the UI can't store junk.
+		tags := make([]string, 0, len(*req.Tags))
+		for _, t := range *req.Tags {
+			t = strings.TrimSpace(t)
+			if t == "" || len(t) > 64 {
+				continue
+			}
+			tags = append(tags, t)
+		}
+		var err error
+		host, err = db.UpdateHostTags(r.Context(), app.DB, id, tags)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeJSONError(w, http.StatusNotFound, "Host not found")
+				return
+			}
+			log.Errorf("Failed to update host tags: %v", err)
+			writeJSONError(w, http.StatusInternalServerError, "Failed to update host")
+			return
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -778,7 +843,18 @@ func (app *Application) handleDeleteHost(w http.ResponseWriter, r *http.Request)
 func (app *Application) wsUpgrader() websocket.Upgrader {
 	return websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
-			return app.CORS.IsAllowed(r.Header.Get("Origin"))
+			origin := r.Header.Get("Origin")
+			if origin == "" {
+				return true // non-browser clients send no Origin
+			}
+			// Same-origin is always safe and must not depend on the CORS
+			// allowlist: the unified container serves the SPA from the API's
+			// own origin, and rejecting it silently killed every live
+			// stream (events, preview, run-update, execute-script).
+			if u, err := url.Parse(origin); err == nil && u.Host == r.Host {
+				return true
+			}
+			return app.CORS.IsAllowed(origin)
 		},
 	}
 }
@@ -811,6 +887,39 @@ func (app *Application) handleAddWebhook(w http.ResponseWriter, r *http.Request)
 	app.audit(r, audit.ActionWebhookCreate, "webhook", req.URL,
 		map[string]interface{}{"event": req.Event})
 	w.WriteHeader(http.StatusCreated)
+}
+
+// handleListWebhooks returns every webhook subscription for the Settings UI.
+func (app *Application) handleListWebhooks(w http.ResponseWriter, r *http.Request) {
+	hooks, err := db.ListAllWebhooks(r.Context(), app.DB)
+	if err != nil {
+		log.Errorf("Failed to list webhooks: %v", err)
+		writeJSONError(w, http.StatusInternalServerError, "Failed to list webhooks")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(hooks)
+}
+
+// handleDeleteWebhook removes a subscription by id.
+func (app *Application) handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Invalid webhook ID")
+		return
+	}
+	rows, err := db.DeleteWebhook(r.Context(), app.DB, int32(id))
+	if err != nil {
+		log.Errorf("Failed to delete webhook: %v", err)
+		writeJSONError(w, http.StatusInternalServerError, "Failed to delete webhook")
+		return
+	}
+	if rows == 0 {
+		writeJSONError(w, http.StatusNotFound, "Webhook not found")
+		return
+	}
+	app.audit(r, audit.ActionWebhookDelete, "webhook", strconv.Itoa(id), nil)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleAutoConfigure runs the bootstrap flow against an existing host
@@ -1021,7 +1130,7 @@ func (app *Application) handleExecuteScript(w http.ResponseWriter, r *http.Reque
 	// we cap what we record so a paste of a 10MB binary doesn't bloat the log,
 	// but we hash the full body for non-repudiation.
 	scriptStr := string(script)
-	
+
 	// Add a reasonable hard limit so malicious clients can't OOM the server or
 	// the SSH session (typically limited to 256KB or so depending on sshd_config).
 	const maxScriptBytes = 128 * 1024 // 128 KB
@@ -1036,15 +1145,15 @@ func (app *Application) handleExecuteScript(w http.ResponseWriter, r *http.Reque
 	if len(preview) > maxAuditedScript {
 		preview = preview[:maxAuditedScript] + "…(truncated)"
 	}
-	
+
 	hash := sha256.Sum256(script)
 	hashHex := hex.EncodeToString(hash[:])
-	
+
 	app.audit(r, audit.ActionRunScript, "host", strconv.FormatInt(int64(id), 10),
 		map[string]interface{}{
-			"script_preview": preview, 
-			"script_bytes": len(scriptStr),
-			"script_sha256": hashHex,
+			"script_preview": preview,
+			"script_bytes":   len(scriptStr),
+			"script_sha256":  hashHex,
 		})
 
 	sshClient, _, err := app.SSHDialer.ConnectToHost(r.Context(), id)
@@ -1207,8 +1316,20 @@ func (app *Application) runHostCommand(w http.ResponseWriter, r *http.Request, h
 	event := "preview_success"
 	if kind == models.RunKindUpdate {
 		event = "update_success"
-		// Clear the host's stored error on a successful update so the badge resets.
-		_, _ = db.UpsertHost(dbCtx, app.DB, host.Hostname, host.SshUser, host.UpdateOutput, host.UpgradeOutput, "")
+		// Clear the host's stored error on a successful update so the badge
+		// resets. Pass the host's existing agent-reported fields back so this
+		// SSH-path write doesn't zero out data an agent may have reported.
+		_, _ = db.UpsertHost(dbCtx, app.DB, host.Hostname, host.SshUser, db.ReportData{
+			UpdateOutput:      host.UpdateOutput,
+			UpgradeOutput:     host.UpgradeOutput,
+			Error:             "",
+			RebootRequired:    host.RebootRequired,
+			PackagesUpdated:   host.PackagesUpdated,
+			PackagesAvailable: host.PackagesAvailable,
+			OsVersion:         host.OsVersion,
+			KernelVersion:     host.KernelVersion,
+			AgentVersion:      host.AgentVersion,
+		})
 	}
 	app.dispatchWebhooks(event, map[string]interface{}{"host_id": hostID, "run_id": run.ID})
 }
@@ -1352,11 +1473,11 @@ func (app *Application) handleBulkRunUpdate(w http.ResponseWriter, r *http.Reque
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 
 	var req struct {
-		HostIDs            []int32 `json:"host_ids"`
-		Concurrency        int     `json:"concurrency,omitempty"`
-		CanaryCount        int     `json:"canary_count,omitempty"`
-		CanaryWaitSeconds  int     `json:"canary_wait_seconds,omitempty"`
-		AbortOnFailurePct  int     `json:"abort_on_failure_pct,omitempty"`
+		HostIDs           []int32 `json:"host_ids"`
+		Concurrency       int     `json:"concurrency,omitempty"`
+		CanaryCount       int     `json:"canary_count,omitempty"`
+		CanaryWaitSeconds int     `json:"canary_wait_seconds,omitempty"`
+		AbortOnFailurePct int     `json:"abort_on_failure_pct,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "Invalid request body")
@@ -1385,12 +1506,12 @@ func (app *Application) handleBulkRunUpdate(w http.ResponseWriter, r *http.Reque
 	}
 
 	result, err := app.BulkUpdater.Start(r.Context(), updater.BulkRunOptions{
-		HostIDs:            req.HostIDs,
-		Concurrency:        req.Concurrency,
-		TriggeredBy:        triggeredBy,
-		CanaryCount:        req.CanaryCount,
-		CanaryWaitSeconds:  req.CanaryWaitSeconds,
-		AbortOnFailurePct:  req.AbortOnFailurePct,
+		HostIDs:           req.HostIDs,
+		Concurrency:       req.Concurrency,
+		TriggeredBy:       triggeredBy,
+		CanaryCount:       req.CanaryCount,
+		CanaryWaitSeconds: req.CanaryWaitSeconds,
+		AbortOnFailurePct: req.AbortOnFailurePct,
 	})
 	if err != nil {
 		log.Errorf("bulk update start failed: %v", err)
@@ -1401,9 +1522,9 @@ func (app *Application) handleBulkRunUpdate(w http.ResponseWriter, r *http.Reque
 	log.Infof("Bulk update %s triggered by %s across %d hosts", result.GroupID, triggeredBy, len(req.HostIDs))
 	app.audit(r, audit.ActionRunBulkUpdate, "run_group", result.GroupID,
 		map[string]interface{}{
-			"host_count":         len(req.HostIDs),
-			"canary_count":       req.CanaryCount,
-			"canary_wait_seconds": req.CanaryWaitSeconds,
+			"host_count":           len(req.HostIDs),
+			"canary_count":         req.CanaryCount,
+			"canary_wait_seconds":  req.CanaryWaitSeconds,
 			"abort_on_failure_pct": req.AbortOnFailurePct,
 		})
 	w.Header().Set("Content-Type", "application/json")

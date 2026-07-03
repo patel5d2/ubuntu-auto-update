@@ -27,7 +27,7 @@ type DBTX interface {
 	Ping(ctx context.Context) error
 }
 
-const hostColumns = `id, hostname, ssh_user, created_at, updated_at, last_seen, update_output, upgrade_output, error`
+const hostColumns = `id, hostname, ssh_user, created_at, updated_at, last_seen, update_output, upgrade_output, error, tags, reboot_required, packages_updated, packages_available, os_version, kernel_version, agent_version`
 
 func NewConnection(ctx context.Context) (*pgxpool.Pool, error) {
 	dbUrl := os.Getenv("DATABASE_URL")
@@ -41,23 +41,49 @@ func NewConnection(ctx context.Context) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
-func UpsertHost(ctx context.Context, db DBTX, hostname, sshUser, updateOutput, upgradeOutput, errorMsg string) (models.Host, error) {
+// ReportData carries the persistable fields of an agent report into UpsertHost.
+type ReportData struct {
+	UpdateOutput      string
+	UpgradeOutput     string
+	Error             string
+	RebootRequired    bool
+	PackagesUpdated   int
+	PackagesAvailable int
+	OsVersion         string
+	KernelVersion     string
+	AgentVersion      string
+}
+
+// UpsertHost records an agent report. On INSERT it seeds ssh_user; on CONFLICT
+// it deliberately does NOT touch ssh_user — a report used to clobber it back to
+// "root", breaking SSH for hosts enrolled as a non-root user. sshUser is only
+// consulted for the initial insert.
+func UpsertHost(ctx context.Context, db DBTX, hostname, sshUser string, r ReportData) (models.Host, error) {
 	var hostError sql.NullString
-	if errorMsg != "" {
-		hostError = sql.NullString{String: errorMsg, Valid: true}
+	if r.Error != "" {
+		hostError = sql.NullString{String: r.Error, Valid: true}
 	}
 
 	rows, err := db.Query(ctx, `
-		INSERT INTO hosts (hostname, ssh_user, last_seen, update_output, upgrade_output, error)
-		VALUES ($1, $2, NOW(), $3, $4, $5)
+		INSERT INTO hosts (hostname, ssh_user, last_seen, update_output, upgrade_output, error,
+		                   reboot_required, packages_updated, packages_available,
+		                   os_version, kernel_version, agent_version)
+		VALUES ($1, $2, NOW(), $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		ON CONFLICT (hostname) DO UPDATE
 		SET last_seen = NOW(),
-		    ssh_user = $2,
 		    update_output = $3,
 		    upgrade_output = $4,
-		    error = $5
+		    error = $5,
+		    reboot_required = $6,
+		    packages_updated = $7,
+		    packages_available = $8,
+		    os_version = $9,
+		    kernel_version = $10,
+		    agent_version = $11
 		RETURNING `+hostColumns,
-		hostname, sshUser, updateOutput, upgradeOutput, hostError)
+		hostname, sshUser, r.UpdateOutput, r.UpgradeOutput, hostError,
+		r.RebootRequired, r.PackagesUpdated, r.PackagesAvailable,
+		r.OsVersion, r.KernelVersion, r.AgentVersion)
 	if err != nil {
 		return models.Host{}, err
 	}
@@ -116,6 +142,22 @@ func UpdateHostSSHUser(ctx context.Context, db DBTX, id int32, sshUser string) (
 		UPDATE hosts SET ssh_user = $2 WHERE id = $1
 		RETURNING `+hostColumns,
 		id, sshUser)
+	if err != nil {
+		return models.Host{}, err
+	}
+	return pgx.CollectExactlyOneRow(rows, pgx.RowToStructByName[models.Host])
+}
+
+// UpdateHostTags replaces the host's tag list. Returns pgx.ErrNoRows if no
+// row matches.
+func UpdateHostTags(ctx context.Context, db DBTX, id int32, tags []string) (models.Host, error) {
+	if tags == nil {
+		tags = []string{}
+	}
+	rows, err := db.Query(ctx, `
+		UPDATE hosts SET tags = $2, updated_at = NOW() WHERE id = $1
+		RETURNING `+hostColumns,
+		id, tags)
 	if err != nil {
 		return models.Host{}, err
 	}
@@ -207,6 +249,32 @@ func SetSSHKeyAndUser(ctx context.Context, db DBTX, hostID int32, sshUser, priva
 	}
 
 	return tx.Commit(ctx)
+}
+
+// ListAllWebhooks returns every webhook subscription, for the Settings UI.
+func ListAllWebhooks(ctx context.Context, db DBTX) ([]models.Webhook, error) {
+	rows, err := db.Query(ctx, `SELECT id, url, event FROM webhooks ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	hooks, err := pgx.CollectRows(rows, pgx.RowToStructByName[models.Webhook])
+	if err != nil {
+		return nil, err
+	}
+	if hooks == nil {
+		hooks = []models.Webhook{}
+	}
+	return hooks, nil
+}
+
+// DeleteWebhook removes a subscription by id, returning rows affected so the
+// handler can distinguish 404 from success.
+func DeleteWebhook(ctx context.Context, db DBTX, id int32) (int64, error) {
+	tag, err := db.Exec(ctx, `DELETE FROM webhooks WHERE id = $1`, id)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }
 
 func GetWebhooks(ctx context.Context, db DBTX, event string) ([]models.Webhook, error) {

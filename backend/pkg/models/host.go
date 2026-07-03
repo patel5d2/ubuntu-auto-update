@@ -16,6 +16,16 @@ type Host struct {
 	UpdateOutput  string         `json:"update_output" db:"update_output"`
 	UpgradeOutput string         `json:"upgrade_output" db:"upgrade_output"`
 	Error         sql.NullString `json:"-" db:"error"`
+	Tags          []string       `json:"tags" db:"tags"`
+
+	// Agent-reported fields (populated by /api/v1/report). Zero-valued for
+	// SSH-only hosts that never run the agent.
+	RebootRequired    bool   `json:"reboot_required" db:"reboot_required"`
+	PackagesUpdated   int    `json:"packages_updated" db:"packages_updated"`
+	PackagesAvailable int    `json:"packages_available" db:"packages_available"`
+	OsVersion         string `json:"os_version" db:"os_version"`
+	KernelVersion     string `json:"kernel_version" db:"kernel_version"`
+	AgentVersion      string `json:"agent_version" db:"agent_version"`
 }
 
 // MarshalJSON renders Error as a plain string-or-null instead of the default

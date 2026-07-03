@@ -18,6 +18,12 @@ import (
 
 const dialTimeout = 30 * time.Second
 
+// sudoProbeCmd checks passwordless sudo with a command every sudo scope
+// grants ("apt" and "full" both allow apt-get). `sudo -n true` is wrong
+// here: under the apt scope, true isn't in the NOPASSWD list, so the probe
+// would report sudo as missing on a correctly-enrolled host.
+const sudoProbeCmd = "sudo -n apt-get --version >/dev/null"
+
 // Dialer holds a cached host-key callback so we don't reread known_hosts on
 // every connection. When the source is the on-disk known_hosts file the
 // callback genuinely is a one-time load; for the DB-backed source the
@@ -38,11 +44,11 @@ func NewDialer(pool *pgxpool.Pool) *Dialer {
 //
 // HOST_KEY_STORE selects the source:
 //   - "db"   (default when HOST_KEY_STORE is unset and a pool is available)
-//            uses the host_keys table from migration 000013, so all backend
-//            replicas share the same view of fingerprints.
+//     uses the host_keys table from migration 000013, so all backend
+//     replicas share the same view of fingerprints.
 //   - "file" reads the on-disk known_hosts file at KNOWN_HOSTS_FILE
-//            (default ./known_hosts) — kept as an escape hatch for legacy
-//            deployments and for offline testing.
+//     (default ./known_hosts) — kept as an escape hatch for legacy
+//     deployments and for offline testing.
 //
 // Concurrency: a mutex guards the cached callback rather than sync.Once
 // because invalidateHostKeyCache needs to swap the cache atomically when
@@ -141,14 +147,14 @@ func (d *Dialer) TestConnection(ctx context.Context, hostID int32) (TestResult, 
 	}
 
 	if host.SshUser != "" && host.SshUser != "root" {
-		// Run sudo -n true on a fresh session; the previous one is closed already.
+		// Probe sudo on a fresh session; the previous one is closed already.
 		s2, err := client.NewSession()
 		if err != nil {
 			res.SudoState = "unavailable"
 			return res, nil
 		}
 		defer s2.Close()
-		if err := s2.Run("sudo -n true"); err != nil {
+		if err := s2.Run(sudoProbeCmd); err != nil {
 			res.SudoState = "unavailable"
 		} else {
 			res.SudoState = "available"

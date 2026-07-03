@@ -14,6 +14,13 @@ import (
 	"ubuntu-auto-update/backend/pkg/db"
 )
 
+// setTestKey points crypto at an in-env key so tests don't depend on an
+// encryption.key file existing in the working directory.
+func setTestKey(t *testing.T) {
+	t.Helper()
+	t.Setenv("ENCRYPTION_KEY", "0000000000000000000000000000000000000000000000000000000000000000")
+}
+
 func TestUpsertHost(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
@@ -23,24 +30,24 @@ func TestUpsertHost(t *testing.T) {
 
 	now := time.Now()
 	// Success path
-	rows := mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error"}).
-		AddRow(int32(1), "test-host", "root", now, now, now, "out", "out", nil)
+	rows := mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error", "tags", "reboot_required", "packages_updated", "packages_available", "os_version", "kernel_version", "agent_version"}).
+		AddRow(int32(1), "test-host", "root", now, now, now, "out", "out", nil, []string{}, false, 0, 0, "", "", "")
 
 	mock.ExpectQuery(`INSERT INTO hosts`).
-		WithArgs("test-host", "root", "out", "out", sql.NullString{}).
+		WithArgs("test-host", "root", "out", "out", sql.NullString{}, false, 0, 0, "", "", "").
 		WillReturnRows(rows)
 
-	_, err = db.UpsertHost(context.Background(), mock, "test-host", "root", "out", "out", "")
+	_, err = db.UpsertHost(context.Background(), mock, "test-host", "root", db.ReportData{UpdateOutput: "out", UpgradeOutput: "out"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	// Error path
 	mock.ExpectQuery(`INSERT INTO hosts`).
-		WithArgs("test-host-2", "root", "out", "out", sql.NullString{String: "err", Valid: true}).
+		WithArgs("test-host-2", "root", "out", "out", sql.NullString{String: "err", Valid: true}, false, 0, 0, "", "", "").
 		WillReturnError(errors.New("db error"))
 
-	_, err = db.UpsertHost(context.Background(), mock, "test-host-2", "root", "out", "out", "err")
+	_, err = db.UpsertHost(context.Background(), mock, "test-host-2", "root", db.ReportData{UpdateOutput: "out", UpgradeOutput: "out", Error: "err"})
 	if err == nil {
 		t.Error("expected error")
 	}
@@ -55,8 +62,8 @@ func TestListHosts(t *testing.T) {
 
 	now := time.Now()
 	// Success path
-	rows := mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error"}).
-		AddRow(int32(1), "test-host", "root", now, now, now, "", "", nil)
+	rows := mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error", "tags", "reboot_required", "packages_updated", "packages_available", "os_version", "kernel_version", "agent_version"}).
+		AddRow(int32(1), "test-host", "root", now, now, now, "", "", nil, []string{}, false, 0, 0, "", "", "")
 
 	mock.ExpectQuery(`SELECT (.+) FROM hosts ORDER BY hostname`).
 		WillReturnRows(rows)
@@ -84,7 +91,7 @@ func TestListHosts(t *testing.T) {
 
 	// 0 rows path
 	mock.ExpectQuery(`SELECT (.+) FROM hosts ORDER BY hostname`).
-		WillReturnRows(mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error"}))
+		WillReturnRows(mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error", "tags", "reboot_required", "packages_updated", "packages_available", "os_version", "kernel_version", "agent_version"}))
 	hosts, err := db.ListHosts(context.Background(), mock)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -103,8 +110,8 @@ func TestCreateHost(t *testing.T) {
 
 	now := time.Now()
 	// Success
-	rows := mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error"}).
-		AddRow(int32(1), "test-host", "root", now, now, now, "", "", nil)
+	rows := mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error", "tags", "reboot_required", "packages_updated", "packages_available", "os_version", "kernel_version", "agent_version"}).
+		AddRow(int32(1), "test-host", "root", now, now, now, "", "", nil, []string{}, false, 0, 0, "", "", "")
 
 	mock.ExpectQuery(`INSERT INTO hosts`).
 		WithArgs("test-host", "root").
@@ -154,8 +161,8 @@ func TestUpdateHostSSHUser(t *testing.T) {
 	defer mock.Close()
 
 	now := time.Now()
-	rows := mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error"}).
-		AddRow(int32(1), "test-host", "ubuntu", now, now, now, "", "", nil)
+	rows := mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error", "tags", "reboot_required", "packages_updated", "packages_available", "os_version", "kernel_version", "agent_version"}).
+		AddRow(int32(1), "test-host", "ubuntu", now, now, now, "", "", nil, []string{}, false, 0, 0, "", "", "")
 
 	mock.ExpectQuery(`UPDATE hosts SET ssh_user = \$2 WHERE id = \$1`).
 		WithArgs(int32(1), "ubuntu").
@@ -210,8 +217,8 @@ func TestGetHost(t *testing.T) {
 
 	now := time.Now()
 	// Success path
-	rows := mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error"}).
-		AddRow(int32(1), "test-host", "root", now, now, now, "", "", nil)
+	rows := mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error", "tags", "reboot_required", "packages_updated", "packages_available", "os_version", "kernel_version", "agent_version"}).
+		AddRow(int32(1), "test-host", "root", now, now, now, "", "", nil, []string{}, false, 0, 0, "", "", "")
 
 	mock.ExpectQuery(`SELECT (.+) FROM hosts WHERE id = \$1`).
 		WithArgs(int32(1)).
@@ -233,6 +240,7 @@ func TestGetHost(t *testing.T) {
 }
 
 func TestGetSSHKey(t *testing.T) {
+	setTestKey(t)
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatalf("error creating mock: %v", err)
@@ -275,7 +283,7 @@ func TestGetSSHKey(t *testing.T) {
 	mock.ExpectQuery(`SELECT host_id, private_key FROM ssh_keys WHERE host_id = \$1`).
 		WithArgs(int32(4)).
 		WillReturnRows(mock.NewRows([]string{"host_id", "private_key"}).AddRow(int32(4), encrypted))
-	
+
 	key, err := db.GetSSHKey(context.Background(), mock, 4)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -286,6 +294,7 @@ func TestGetSSHKey(t *testing.T) {
 }
 
 func TestAddSSHKey(t *testing.T) {
+	setTestKey(t)
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatalf("error creating mock: %v", err)
@@ -311,6 +320,7 @@ func TestAddSSHKey(t *testing.T) {
 }
 
 func TestSetSSHKeyAndUser(t *testing.T) {
+	setTestKey(t)
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatalf("error creating mock: %v", err)

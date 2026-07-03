@@ -338,7 +338,7 @@ func TestHandleLogout_Success(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/logout", nil)
 	req.AddCookie(&http.Cookie{Name: "auth_token", Value: "valid-token"})
 	req = req.WithContext(context.WithValue(req.Context(), middleware.PrincipalContextKey, &session.Principal{Username: "admin", Role: session.RoleAdmin}))
-	
+
 	mock.ExpectExec(`INSERT INTO audit_log`).
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))

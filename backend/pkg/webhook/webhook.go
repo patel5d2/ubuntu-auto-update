@@ -30,14 +30,14 @@ func IsSafeURL(target string) error {
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return fmt.Errorf("unsupported scheme %q (must be http or https)", u.Scheme)
 	}
-	
+
 	// Resolve IP to check against private ranges
 	host := u.Hostname()
 	ips, err := net.LookupIP(host)
 	if err != nil {
 		return fmt.Errorf("could not resolve hostname: %w", err)
 	}
-	
+
 	for _, ip := range ips {
 		// Reject loopback (127.0.0.0/8, ::1)
 		if ip.IsLoopback() {

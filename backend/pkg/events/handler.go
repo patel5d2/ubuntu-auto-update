@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"ubuntu-auto-update/backend/pkg/session"
 	log "github.com/sirupsen/logrus"
+	"ubuntu-auto-update/backend/pkg/session"
 )
 
 // websocket protocol-level constants. Tuned so a typical desktop browser's

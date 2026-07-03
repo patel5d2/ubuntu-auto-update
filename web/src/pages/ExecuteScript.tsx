@@ -44,8 +44,8 @@ export function ExecuteScript() {
         <dialog open>
           <article>
             <header>
-              <a href="#" aria-label="Close" className="close" onClick={() => setIsModalOpen(false)}></a>
-              Script Output
+              <button type="button" aria-label="Close" rel="prev" onClick={() => setIsModalOpen(false)} />
+              <strong>Script Output</strong>
             </header>
             <pre><code>{output.join('\n')}</code></pre>
           </article>

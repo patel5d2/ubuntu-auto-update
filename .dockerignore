@@ -1,0 +1,9 @@
+# Root build context excludes. Without this, COPY web/ drags the host's
+# darwin node_modules into the linux image (esbuild platform mismatch) and
+# agent/target bloats the context by gigabytes.
+web/node_modules
+web/dist
+agent/target
+mobile
+.git
+.env

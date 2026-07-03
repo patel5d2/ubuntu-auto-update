@@ -8,6 +8,7 @@ import { RelativeTime } from '../components/RelativeTime';
 import { useToast } from '../components/Toast';
 import { useConfirm } from '../components/ConfirmDialog';
 import { useEvent } from '../hooks/useEvents';
+import { RolloutModal, type RolloutOptions } from '../components/RolloutModal';
 
 type StatusFilter = 'all' | HostStatus;
 
@@ -32,8 +33,10 @@ export function HostList() {
   const [addOpen, setAddOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [tagFilter, setTagFilter] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulkSubmitting, setBulkSubmitting] = useState(false);
+  const [rolloutOpen, setRolloutOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const toast = useToast();
@@ -101,9 +104,10 @@ export function HostList() {
     return hosts.filter(host => {
       if (term && !host.hostname.toLowerCase().includes(term)) return false;
       if (statusFilter !== 'all' && hostStatus(host) !== statusFilter) return false;
+      if (tagFilter && !(host.tags ?? []).includes(tagFilter)) return false;
       return true;
     });
-  }, [hosts, search, statusFilter]);
+  }, [hosts, search, statusFilter, tagFilter]);
 
   // Keep selection in sync with the visible list — if a filtered-out host
   // gets removed it shouldn't linger in the bulk count.
@@ -145,23 +149,16 @@ export function HostList() {
     setHosts(prev => [...prev, host].sort((a, b) => a.hostname.localeCompare(b.hostname)));
   };
 
-  const handleBulkUpdate = async () => {
-    if (selected.size === 0) return;
+  const handleRolloutSubmit = async (opts: RolloutOptions) => {
     const ids = Array.from(selected);
-    const ok = await confirm({
-      title: `Run apt-get upgrade on ${ids.length} host${ids.length === 1 ? '' : 's'}?`,
-      message: 'Each host gets a real package upgrade. Progress and per-host output stream on the bulk page.',
-      destructive: true,
-      confirmLabel: 'Run update',
-    });
-    if (!ok) return;
-
     setBulkSubmitting(true);
     try {
       const result = await apiPost<BulkRunResult>('/api/v1/hosts/bulk/run-update', {
         host_ids: ids,
+        ...opts,
       });
       toast.show(`Bulk update started for ${ids.length} host${ids.length === 1 ? '' : 's'}.`, 'success');
+      setRolloutOpen(false);
       navigate(`/hosts/bulk/${result.group_id}`);
     } catch (err) {
       toast.show(err instanceof Error ? err.message : 'Failed to start bulk update.', 'error');
@@ -256,6 +253,11 @@ export function HostList() {
           <option value="offline">Offline</option>
           <option value="error">Error</option>
         </select>
+        {tagFilter && (
+          <span className="tag-chip active" onClick={() => setTagFilter(null)} title="Clear tag filter">
+            {tagFilter} ✕
+          </span>
+        )}
       </div>
 
       {/* Sticky bulk-action bar — only renders while something is selected. */}
@@ -264,7 +266,7 @@ export function HostList() {
           <strong>{selected.size} selected</strong>
           <button
             type="button"
-            onClick={handleBulkUpdate}
+            onClick={() => setRolloutOpen(true)}
             disabled={bulkSubmitting}
             aria-busy={bulkSubmitting || undefined}
             style={{ width: 'auto' }}
@@ -317,6 +319,7 @@ export function HostList() {
               </th>
               <th>Hostname</th>
               <th>Status</th>
+              <th>Tags</th>
               <th>Last seen</th>
               <th>SSH user</th>
             </tr>
@@ -337,6 +340,23 @@ export function HostList() {
                   <td><Link to={`/hosts/${host.id}`}>{host.hostname}</Link></td>
                   <td>
                     <StatusBadge status={status} title={host.error ?? undefined} />
+                    {host.reboot_required && (
+                      <span className="tag-chip" style={{ background: '#fdecea', color: '#c0392b' }} title="Kernel/package update needs a reboot">
+                        ⟳ reboot
+                      </span>
+                    )}
+                  </td>
+                  <td>
+                    {(host.tags ?? []).map(tag => (
+                      <span
+                        key={tag}
+                        className={`tag-chip${tagFilter === tag ? ' active' : ''}`}
+                        onClick={() => setTagFilter(prev => (prev === tag ? null : tag))}
+                        title={`Filter by ${tag}`}
+                      >
+                        {tag}
+                      </span>
+                    ))}
                   </td>
                   <td><RelativeTime time={host.last_seen} /></td>
                   <td><code>{host.ssh_user}</code></td>
@@ -345,7 +365,7 @@ export function HostList() {
             })}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={5} style={{ textAlign: 'center' }}>
+                <td colSpan={6} style={{ textAlign: 'center' }}>
                   No hosts match the current filters.
                 </td>
               </tr>
@@ -355,6 +375,14 @@ export function HostList() {
       )}
 
       <AddHostModal open={addOpen} onClose={() => setAddOpen(false)} onCreated={handleCreated} />
+      {rolloutOpen && (
+        <RolloutModal
+          hostCount={selected.size}
+          submitting={bulkSubmitting}
+          onCancel={() => setRolloutOpen(false)}
+          onSubmit={handleRolloutSubmit}
+        />
+      )}
     </div>
   );
 }

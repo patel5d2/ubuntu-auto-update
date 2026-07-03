@@ -8,6 +8,34 @@ export interface Host {
   update_output: string;
   upgrade_output: string;
   error: string | null;
+  tags: string[];
+  reboot_required: boolean;
+  packages_updated: number;
+  packages_available: number;
+  os_version: string;
+  kernel_version: string;
+  agent_version: string;
+}
+
+export interface Schedule {
+  id: number;
+  name: string;
+  host_ids: number[];
+  interval_minutes: number;
+  next_run_at: string;
+  enabled: boolean;
+  created_by: string;
+  created_at: string;
+}
+
+export interface Overview {
+  total_hosts: number;
+  online_hosts: number;
+  error_hosts: number;
+  reboot_hosts: number;
+  runs_7d: number;
+  failed_7d: number;
+  running_now: number;
 }
 
 export interface Webhook {

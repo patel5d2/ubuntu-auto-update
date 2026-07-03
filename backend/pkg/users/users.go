@@ -28,26 +28,26 @@ const (
 // would leak whether a username exists. Use `WrappedAuthError` from the
 // callsite for a generic "invalid credentials" response.
 var (
-	ErrUserNotFound        = errors.New("user not found")
-	ErrInvalidCredentials  = errors.New("invalid credentials")
-	ErrAccountLocked       = errors.New("account locked")
-	ErrAccountDisabled     = errors.New("account disabled")
-	ErrDuplicateUsername   = errors.New("username already exists")
-	ErrInvalidRole         = errors.New("invalid role")
-	ErrPasswordTooShort    = errors.New("password must be at least 12 characters")
+	ErrUserNotFound       = errors.New("user not found")
+	ErrInvalidCredentials = errors.New("invalid credentials")
+	ErrAccountLocked      = errors.New("account locked")
+	ErrAccountDisabled    = errors.New("account disabled")
+	ErrDuplicateUsername  = errors.New("username already exists")
+	ErrInvalidRole        = errors.New("invalid role")
+	ErrPasswordTooShort   = errors.New("password must be at least 12 characters")
 )
 
 // User mirrors the `users` table row.
 type User struct {
-	ID            int32      `json:"id"`
-	Username      string     `json:"username"`
-	Role          string     `json:"role"`
-	DisabledAt    *time.Time `json:"disabled_at,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
-	LastLoginAt   *time.Time `json:"last_login_at,omitempty"`
-	FailedLogins  int32      `json:"failed_logins"`
-	LockedUntil   *time.Time `json:"locked_until,omitempty"`
+	ID           int32      `json:"id"`
+	Username     string     `json:"username"`
+	Role         string     `json:"role"`
+	DisabledAt   *time.Time `json:"disabled_at,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+	LastLoginAt  *time.Time `json:"last_login_at,omitempty"`
+	FailedLogins int32      `json:"failed_logins"`
+	LockedUntil  *time.Time `json:"locked_until,omitempty"`
 }
 
 // validRoles is the source of truth, kept in sync with the CHECK constraint.

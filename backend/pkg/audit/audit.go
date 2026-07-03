@@ -15,39 +15,40 @@ import (
 // Action constants. Centralised so every callsite logs the same string for
 // the same logical operation. New actions: add a constant, never a literal.
 const (
-	ActionLoginSuccess    = "login.success"
-	ActionLoginFailure    = "login.failure"
-	ActionLogout          = "logout"
+	ActionLoginSuccess = "login.success"
+	ActionLoginFailure = "login.failure"
+	ActionLogout       = "logout"
 
-	ActionUserCreate      = "user.create"
-	ActionUserUpdate      = "user.update"
-	ActionUserDelete      = "user.delete"
-	ActionUserPassword    = "user.password_reset"
-	ActionUserDisable     = "user.disable"
-	ActionUserEnable      = "user.enable"
+	ActionUserCreate   = "user.create"
+	ActionUserUpdate   = "user.update"
+	ActionUserDelete   = "user.delete"
+	ActionUserPassword = "user.password_reset"
+	ActionUserDisable  = "user.disable"
+	ActionUserEnable   = "user.enable"
 
-	ActionHostCreate      = "host.create"
-	ActionHostUpdate      = "host.update"
-	ActionHostDelete      = "host.delete"
-	ActionHostBootstrap   = "host.bootstrap"
-	ActionHostKeyRotate   = "host.key_rotate"
-	ActionHostKeyInstall  = "host.key_install"
-	ActionHostTestConn    = "host.test_connection"
+	ActionHostCreate     = "host.create"
+	ActionHostUpdate     = "host.update"
+	ActionHostDelete     = "host.delete"
+	ActionHostBootstrap  = "host.bootstrap"
+	ActionHostKeyRotate  = "host.key_rotate"
+	ActionHostKeyInstall = "host.key_install"
+	ActionHostTestConn   = "host.test_connection"
 
-	ActionRunPreview      = "run.preview"
-	ActionRunUpdate       = "run.update"
-	ActionRunBulkUpdate   = "run.bulk_update"
-	ActionRunScript       = "run.script"
+	ActionRunPreview    = "run.preview"
+	ActionRunUpdate     = "run.update"
+	ActionRunBulkUpdate = "run.bulk_update"
+	ActionRunScript     = "run.script"
 
-	ActionWebhookCreate   = "webhook.create"
-	ActionAgentEnroll     = "agent.enroll"
+	ActionWebhookCreate = "webhook.create"
+	ActionWebhookDelete = "webhook.delete"
+	ActionAgentEnroll   = "agent.enroll"
 )
 
 // Event is what callers hand to Log. Keep it small — JSON details are for
 // the long tail.
 type Event struct {
-	ActorUserID *int32                 // nil for unauthenticated / agent contexts
-	ActorLabel  string                 // copy of username, kept even if user deleted
+	ActorUserID *int32 // nil for unauthenticated / agent contexts
+	ActorLabel  string // copy of username, kept even if user deleted
 	Action      string
 	TargetType  string
 	TargetID    string
@@ -168,4 +169,3 @@ func List(ctx context.Context, db db.DBTX, opts ListOptions) ([]Record, error) {
 	}
 	return out, rows.Err()
 }
-

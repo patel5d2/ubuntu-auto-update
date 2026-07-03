@@ -1,0 +1,133 @@
+/* App shell: fixed sidebar + scrolling content. Pico handles typography and
+   controls; this file only adds the ops-console layout it lacks. */
+
+.shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+.sidebar {
+  width: 13rem;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 1rem 0.75rem;
+  border-right: 1px solid var(--pico-muted-border-color, #e0e0e0);
+  background: var(--pico-card-background-color, #fff);
+  position: sticky;
+  top: 0;
+  /* min-height (not height) so a short viewport can't clip the footer, which
+     is pinned with margin-top:auto. */
+  min-height: 100vh;
+}
+
+.sidebar .brand {
+  font-weight: 700;
+  font-size: 1.05rem;
+  padding: 0.25rem 0.5rem 1rem;
+}
+
+.sidebar nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.sidebar nav a {
+  display: block;
+  padding: 0.45rem 0.6rem;
+  border-radius: 0.4rem;
+  text-decoration: none;
+  color: inherit;
+}
+
+.sidebar nav a:hover {
+  background: var(--pico-secondary-focus, rgba(0, 0, 0, 0.06));
+}
+
+.sidebar nav a.active {
+  background: var(--pico-primary-focus, rgba(16, 149, 193, 0.15));
+  color: var(--pico-primary, #1095c1);
+  font-weight: 600;
+}
+
+.sidebar-footer {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.content {
+  flex: 1;
+  min-width: 0;
+  padding: 1.5rem 2rem;
+  max-width: 72rem;
+}
+
+@media (max-width: 768px) {
+  .shell { flex-direction: column; }
+  /* flex-wrap + gap so brand + nav + footer don't collide on one row on a
+     narrow phone — this was the reported overlap. min-height must reset too,
+     or the horizontal bar keeps a full-screen height. */
+  .sidebar {
+    width: 100%;
+    min-height: auto;
+    position: static;
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem 1rem;
+  }
+  .sidebar .brand { padding-bottom: 0.25rem; }
+  .sidebar nav { flex-direction: row; flex-wrap: wrap; }
+  .sidebar-footer { margin-top: 0; margin-left: auto; flex-direction: row; align-items: center; }
+}
+
+/* Overview stat cards */
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+
+.stat-card {
+  padding: 0.9rem 1rem;
+  border-radius: 0.5rem;
+  background: var(--pico-card-background-color, #fff);
+  border: 1px solid var(--pico-muted-border-color, #e0e0e0);
+}
+
+.stat-card .stat-value {
+  font-size: 1.8rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.stat-card .stat-label {
+  font-size: 0.8rem;
+  color: var(--pico-muted-color, #777);
+}
+
+.stat-card.stat-bad .stat-value { color: #d32f2f; }
+.stat-card.stat-good .stat-value { color: #2e7d32; }
+
+/* Tag chips */
+.tag-chip {
+  display: inline-block;
+  padding: 0.05rem 0.5rem;
+  margin: 0 0.25rem 0.15rem 0;
+  border-radius: 1rem;
+  font-size: 0.75rem;
+  background: var(--pico-primary-focus, rgba(16, 149, 193, 0.15));
+  color: var(--pico-primary, #1095c1);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.tag-chip.active {
+  background: var(--pico-primary, #1095c1);
+  color: #fff;
+}

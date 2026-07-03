@@ -61,7 +61,7 @@ func newMockSSHServer(t *testing.T) *mockSSHServer {
 func (s *mockSSHServer) addr() string { return s.listener.Addr().String() }
 
 // addHandler registers a command → output mapping. Prefix-matches are used
-// ("sudo -n true" matches any command that starts with "sudo -n true").
+// ("sudo -n apt-get" matches any command that starts with "sudo -n apt-get").
 func (s *mockSSHServer) addHandler(prefix, output string, exitCode int) {
 	s.handlers[prefix] = mockHandler{output: output, exitCode: exitCode}
 }
@@ -277,7 +277,7 @@ func TestBootstrap_PasswordDial(t *testing.T) {
 	// then reconnects with the new key. For root users it skips sudo.
 	// Our mock accepts everything and returns exit 0, so the flow should succeed.
 	srv.addHandler("authorized_keys", "ok\n", 0)
-	srv.addHandler("sudo -n true", "ok\n", 0)
+	srv.addHandler("sudo -n apt-get", "ok\n", 0)
 	srv.addHandler("echo ubuntu-auto-update-ok", "ubuntu-auto-update-ok\n", 0)
 
 	d := NewDialer(nil)
