@@ -14,18 +14,16 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/ua-backend ./cmd/api
 
 
-# Stage 2: download golang-migrate to a known location.
-FROM alpine:3.20 AS migrate
-ARG MIGRATE_VERSION=v4.18.1
-# TARGETARCH is injected automatically by BuildKit (amd64 / arm64).
-ARG TARGETARCH
-RUN apk add --no-cache curl ca-certificates && \
-    curl -fsSL "https://github.com/golang-migrate/migrate/releases/download/${MIGRATE_VERSION}/migrate.linux-${TARGETARCH}.tar.gz" \
-      | tar -xz -C /usr/local/bin migrate
+# Stage 2: build golang-migrate from source (postgres driver only) — the
+# prebuilt release binaries carry an old toolchain and a vulnerable dep tree.
+FROM golang:1.26-alpine AS migrate
+ARG MIGRATE_VERSION=v4.19.1
+RUN CGO_ENABLED=0 GOBIN=/usr/local/bin go install -trimpath -ldflags="-s -w" \
+    -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@${MIGRATE_VERSION}
 
 
 # Stage 3: runtime image.
-FROM alpine:3.20
+FROM alpine:3.22
 
 RUN apk add --no-cache ca-certificates postgresql-client wget && \
     adduser -D -u 1000 uau
