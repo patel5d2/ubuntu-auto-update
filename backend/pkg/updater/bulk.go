@@ -20,6 +20,7 @@ import (
 
 	"ubuntu-auto-update/backend/pkg/db"
 	"ubuntu-auto-update/backend/pkg/models"
+	"ubuntu-auto-update/backend/pkg/playbooks"
 	sshpkg "ubuntu-auto-update/backend/pkg/ssh"
 )
 
@@ -52,6 +53,16 @@ type BulkRunOptions struct {
 	CanaryCount       int
 	CanaryWaitSeconds int
 	AbortOnFailurePct int
+
+	// Playbook fan-out. Zero values keep the apt-update path byte-identical:
+	//   - Kind == "" is treated as RunKindUpdate.
+	//   - Steps == nil/empty runs the single buildUpdateScript command.
+	// Steps are RAW (uncompiled): the sudo prefix depends on each host's
+	// ssh_user, known only inside runOne after ConnectToHost.
+	Kind       models.RunKind
+	Steps      []string
+	UseSudo    bool
+	PlaybookID *int32
 }
 
 // BulkResult is what we hand back to the API caller. RunIDs is parallel to
@@ -112,9 +123,13 @@ func (c *Coordinator) Start(ctx context.Context, opts BulkRunOptions) (BulkResul
 	// Pre-create runs so the UI can render the bulk view straight away.
 	// Failure here is bad enough to bail entirely; we don't want a partial
 	// fan-out where some hosts have rows and others don't.
+	kind := opts.Kind
+	if kind == "" {
+		kind = models.RunKindUpdate
+	}
 	runIDs := make([]int32, len(opts.HostIDs))
 	for i, hid := range opts.HostIDs {
-		run, err := db.CreateRunWithGroup(ctx, c.Pool, hid, opts.TriggeredBy, models.RunKindUpdate, groupID)
+		run, err := db.CreateRunFull(ctx, c.Pool, hid, opts.TriggeredBy, kind, groupID, opts.PlaybookID)
 		if err != nil {
 			return BulkResult{}, fmt.Errorf("create run for host %d: %w", hid, err)
 		}
@@ -161,7 +176,7 @@ func (c *Coordinator) run(opts BulkRunOptions, groupID string, runIDs []int32, c
 	if end == 0 {
 		end = len(opts.HostIDs)
 	}
-	canaryFailures := c.runWave(ctx, opts.HostIDs[:end], runIDs[:end], conc)
+	canaryFailures := c.runWave(ctx, opts, opts.HostIDs[:end], runIDs[:end], conc)
 
 	// Stop early if the canary tripped the abort threshold.
 	if canary > 0 {
@@ -192,14 +207,14 @@ func (c *Coordinator) run(opts BulkRunOptions, groupID string, runIDs []int32, c
 
 	// Wave 2: the rest, only when canary > 0 and there's something left.
 	if canary > 0 && end < len(opts.HostIDs) {
-		_ = c.runWave(ctx, opts.HostIDs[end:], runIDs[end:], conc)
+		_ = c.runWave(ctx, opts, opts.HostIDs[end:], runIDs[end:], conc)
 	}
 }
 
 // runWave executes one slice of hosts under the concurrency cap and returns
 // the number of failed runs. The cap is applied within the wave so each wave
 // is independently bounded.
-func (c *Coordinator) runWave(ctx context.Context, hostIDs, runIDs []int32, conc int) int {
+func (c *Coordinator) runWave(ctx context.Context, opts BulkRunOptions, hostIDs, runIDs []int32, conc int) int {
 	sem := semaphore.NewWeighted(int64(conc))
 	var wg sync.WaitGroup
 	var failures int64
@@ -221,7 +236,7 @@ func (c *Coordinator) runWave(ctx context.Context, hostIDs, runIDs []int32, conc
 		go func() {
 			defer wg.Done()
 			defer sem.Release(1)
-			if !c.runOne(ctx, hostID, runID) {
+			if !c.runOne(ctx, opts, hostID, runID) {
 				mu.Lock()
 				failures++
 				mu.Unlock()
@@ -254,9 +269,13 @@ func shouldAbort(thresholdPct, observedPct int) bool {
 	return observedPct >= thresholdPct
 }
 
-// runOne performs a single host's update. Output is captured to the
-// pre-existing update_runs row identified by runID. Returns true on success.
-func (c *Coordinator) runOne(ctx context.Context, hostID, runID int32) bool {
+// runOne performs a single host's run. For the update path (opts.Steps empty)
+// it runs the one buildUpdateScript command — byte-identical to before. For a
+// playbook it compiles the raw steps for this host's ssh_user and runs them
+// one SSH session per step, stopping at the first failure (mirrors
+// runHostCommand). Output is captured to the pre-existing update_runs row.
+// Returns true on success.
+func (c *Coordinator) runOne(ctx context.Context, opts BulkRunOptions, hostID, runID int32) bool {
 	finishStatus := models.RunStatusFailed
 	finishExit := -1
 	finishErr := ""
@@ -279,30 +298,47 @@ func (c *Coordinator) runOne(ctx context.Context, hostID, runID int32) bool {
 	}
 	defer client.Close()
 
+	cmds := []string{buildUpdateScript(host.SshUser)}
+	if len(opts.Steps) > 0 {
+		cmds = playbooks.CompileSteps(opts.Steps, host.SshUser, opts.UseSudo)
+	}
+
+	for _, cmd := range cmds {
+		exit, cmdErr := c.runOneCommand(ctx, client, runID, cmd)
+		if cmdErr != nil {
+			finishExit = exit
+			finishErr = cmdErr.Error()
+			return false // stop-on-failure
+		}
+	}
+
+	finishStatus = models.RunStatusSucceeded
+	finishExit = 0
+	return true
+}
+
+// runOneCommand runs a single shell line on an existing SSH client, tees its
+// output to the run row, and returns the remote exit code (-1 on SSH-layer
+// failure). Extracted from runOne so a playbook can loop it per step.
+func (c *Coordinator) runOneCommand(ctx context.Context, client *gossh.Client, runID int32, cmd string) (int, error) {
 	session, err := client.NewSession()
 	if err != nil {
-		finishErr = "ssh session: " + err.Error()
-		_, _ = db.AppendRunOutput(ctx, c.Pool, runID, finishErr+"\n")
-		return false
+		return -1, fmt.Errorf("ssh session: %w", err)
 	}
 	defer session.Close()
 
 	stdout, err := session.StdoutPipe()
 	if err != nil {
-		finishErr = "stdout pipe: " + err.Error()
-		return false
+		return -1, fmt.Errorf("stdout pipe: %w", err)
 	}
 	stderr, err := session.StderrPipe()
 	if err != nil {
-		finishErr = "stderr pipe: " + err.Error()
-		return false
+		return -1, fmt.Errorf("stderr pipe: %w", err)
 	}
 
-	cmd := buildUpdateScript(host.SshUser)
 	_, _ = db.AppendRunOutput(ctx, c.Pool, runID, "$ "+cmd+"\n")
 	if err := session.Start(cmd); err != nil {
-		finishErr = "start command: " + err.Error()
-		return false
+		return -1, fmt.Errorf("start command: %w", err)
 	}
 
 	var pumpWG sync.WaitGroup
@@ -313,17 +349,12 @@ func (c *Coordinator) runOne(ctx context.Context, hostID, runID int32) bool {
 
 	err = session.Wait()
 	if err == nil {
-		finishStatus = models.RunStatusSucceeded
-		finishExit = 0
-		return true
+		return 0, nil
 	}
 	if exitErr, ok := err.(*gossh.ExitError); ok {
-		finishExit = exitErr.ExitStatus()
-		finishErr = fmt.Sprintf("exit status %d", exitErr.ExitStatus())
-		return false
+		return exitErr.ExitStatus(), fmt.Errorf("exit status %d", exitErr.ExitStatus())
 	}
-	finishErr = err.Error()
-	return false
+	return -1, err
 }
 
 func (c *Coordinator) markFailed(runID int32, msg string) {

@@ -12,8 +12,9 @@ import (
 type RunKind string
 
 const (
-	RunKindPreview RunKind = "preview"
-	RunKindUpdate  RunKind = "update"
+	RunKindPreview  RunKind = "preview"
+	RunKindUpdate   RunKind = "update"
+	RunKindPlaybook RunKind = "playbook"
 )
 
 // RunStatus tracks lifecycle. CHECK constraint in the schema enforces the
@@ -39,6 +40,7 @@ type UpdateRun struct {
 	FinishedAt  sql.NullTime   `json:"-"            db:"finished_at"`
 	Output      string         `json:"output"       db:"output"`
 	Error       sql.NullString `json:"-"           db:"error"`
+	PlaybookID  sql.NullInt32  `json:"-"           db:"playbook_id"`
 }
 
 // MarshalJSON renders nullable columns as plain JSON null instead of the
@@ -51,6 +53,7 @@ func (r UpdateRun) MarshalJSON() ([]byte, error) {
 		fin  interface{}
 		errV interface{}
 		grp  interface{}
+		pb   interface{}
 	)
 	if r.ExitCode.Valid {
 		exit = r.ExitCode.Int32
@@ -64,6 +67,9 @@ func (r UpdateRun) MarshalJSON() ([]byte, error) {
 	if r.RunGroupID.Valid {
 		grp = r.RunGroupID.String
 	}
+	if r.PlaybookID.Valid {
+		pb = r.PlaybookID.Int32
+	}
 
 	return json.Marshal(&struct {
 		Alias
@@ -71,11 +77,13 @@ func (r UpdateRun) MarshalJSON() ([]byte, error) {
 		FinishedAt interface{} `json:"finished_at"`
 		Error      interface{} `json:"error"`
 		RunGroupID interface{} `json:"run_group_id"`
+		PlaybookID interface{} `json:"playbook_id"`
 	}{
 		Alias:      Alias(r),
 		ExitCode:   exit,
 		FinishedAt: fin,
 		Error:      errV,
 		RunGroupID: grp,
+		PlaybookID: pb,
 	})
 }

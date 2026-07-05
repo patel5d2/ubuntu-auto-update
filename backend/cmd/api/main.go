@@ -248,6 +248,7 @@ func main() {
 	viewer.HandleFunc("/me", app.handleMe).Methods(http.MethodGet)
 	viewer.HandleFunc("/overview", app.handleOverview).Methods(http.MethodGet)
 	viewer.HandleFunc("/schedules", app.handleListSchedules).Methods(http.MethodGet)
+	viewer.HandleFunc("/playbooks", app.handleListPlaybooks).Methods(http.MethodGet)
 
 	// State-changing operations — operator+.
 	op := api.PathPrefix("").Subrouter()
@@ -270,6 +271,12 @@ func main() {
 	op.HandleFunc("/hosts/{id}/rotate-key", app.handleRotateKey).Methods(http.MethodPost)
 	op.HandleFunc("/hosts/bulk/enroll", app.handleBulkEnroll).Methods(http.MethodPost)
 	op.HandleFunc("/hosts/bulk/run-update", app.handleBulkRunUpdate).Methods(http.MethodPost)
+	op.HandleFunc("/hosts/bulk/run-playbook", app.handleBulkRunPlaybook).Methods(http.MethodPost)
+	op.HandleFunc("/hosts/{id}/run-playbook", app.handleRunPlaybook).Methods(http.MethodGet)
+	op.HandleFunc("/playbooks", app.handleCreatePlaybook).Methods(http.MethodPost)
+	op.HandleFunc("/playbooks/{id}", app.handleGetPlaybook).Methods(http.MethodGet)
+	op.HandleFunc("/playbooks/{id}", app.handleUpdatePlaybook).Methods(http.MethodPatch)
+	op.HandleFunc("/playbooks/{id}", app.handleDeletePlaybook).Methods(http.MethodDelete)
 	op.HandleFunc("/webhooks", app.handleListWebhooks).Methods(http.MethodGet)
 	op.HandleFunc("/webhooks", app.handleAddWebhook).Methods(http.MethodPost)
 	op.HandleFunc("/webhooks/{id}", app.handleDeleteWebhook).Methods(http.MethodDelete)
@@ -1248,7 +1255,29 @@ func (app *Application) handleRunUpdate(w http.ResponseWriter, r *http.Request) 
 //   - SSHes, executes commands, tees stdout/stderr to (a) the websocket and
 //     (b) the run row, with the row's output column capped at 1 MiB
 //   - marks the run terminal in all exit paths
+//
+// runEvents maps a run kind to its (failure, success) webhook event names.
+// Both are CHECK-constrained in the webhooks table (migration 000009/000017).
+// Preview keeps its historical behavior: failures fire update_failure.
+func runEvents(kind models.RunKind) (failEvent, successEvent string) {
+	switch kind {
+	case models.RunKindPlaybook:
+		return "playbook_failure", "playbook_success"
+	case models.RunKindUpdate:
+		return "update_failure", "update_success"
+	default: // preview
+		return "update_failure", "preview_success"
+	}
+}
+
 func (app *Application) runHostCommand(w http.ResponseWriter, r *http.Request, hostID int32, kind models.RunKind, commands []string) {
+	app.runHostCommandOpts(w, r, hostID, kind, commands, nil)
+}
+
+// runHostCommandOpts is the shared single-host streaming engine. playbookID is
+// recorded on the run row (nil for preview/update). Preview/update callers go
+// through runHostCommand with nil, so their behavior is unchanged.
+func (app *Application) runHostCommandOpts(w http.ResponseWriter, r *http.Request, hostID int32, kind models.RunKind, commands []string, playbookID *int32) {
 	upgrader := app.wsUpgrader()
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -1256,6 +1285,8 @@ func (app *Application) runHostCommand(w http.ResponseWriter, r *http.Request, h
 		return
 	}
 	defer conn.Close()
+
+	failEvent, successEvent := runEvents(kind)
 
 	user := middleware.GetUserFromContext(r)
 	triggeredBy := "unknown"
@@ -1269,7 +1300,7 @@ func (app *Application) runHostCommand(w http.ResponseWriter, r *http.Request, h
 	dbCtx, cancelDB := context.WithCancel(context.Background())
 	defer cancelDB()
 
-	run, err := db.CreateRun(dbCtx, app.DB, hostID, triggeredBy, kind)
+	run, err := db.CreateRunFull(dbCtx, app.DB, hostID, triggeredBy, kind, "", playbookID)
 	if err != nil {
 		log.Errorf("Failed to create run row: %v", err)
 		conn.WriteMessage(websocket.TextMessage, []byte("Failed to create run record: "+err.Error()))
@@ -1293,7 +1324,7 @@ func (app *Application) runHostCommand(w http.ResponseWriter, r *http.Request, h
 		log.Errorf("SSH connect to host %d failed: %v", hostID, err)
 		emit(conn, "SSH connect failed: "+err.Error())
 		_, _ = db.AppendRunOutput(dbCtx, app.DB, run.ID, "SSH connect failed: "+err.Error()+"\n")
-		app.dispatchWebhooks("update_failure", map[string]interface{}{"host_id": hostID, "error": err.Error()})
+		app.dispatchWebhooks(failEvent, map[string]interface{}{"host_id": hostID, "error": err.Error()})
 		return
 	}
 	defer sshClient.Close()
@@ -1304,7 +1335,7 @@ func (app *Application) runHostCommand(w http.ResponseWriter, r *http.Request, h
 			finishErr = runErr.Error()
 			finishExit = exitCode
 			emit(conn, fmt.Sprintf("\nCommand failed (exit %d): %s\n", exitCode, runErr.Error()))
-			app.dispatchWebhooks("update_failure", map[string]interface{}{
+			app.dispatchWebhooks(failEvent, map[string]interface{}{
 				"host_id": hostID, "run_id": run.ID, "command": cmd, "error": runErr.Error(),
 			})
 			return
@@ -1313,9 +1344,7 @@ func (app *Application) runHostCommand(w http.ResponseWriter, r *http.Request, h
 
 	finishStatus = models.RunStatusSucceeded
 	finishExit = 0
-	event := "preview_success"
 	if kind == models.RunKindUpdate {
-		event = "update_success"
 		// Clear the host's stored error on a successful update so the badge
 		// resets. Pass the host's existing agent-reported fields back so this
 		// SSH-path write doesn't zero out data an agent may have reported.
@@ -1331,7 +1360,7 @@ func (app *Application) runHostCommand(w http.ResponseWriter, r *http.Request, h
 			AgentVersion:      host.AgentVersion,
 		})
 	}
-	app.dispatchWebhooks(event, map[string]interface{}{"host_id": hostID, "run_id": run.ID})
+	app.dispatchWebhooks(successEvent, map[string]interface{}{"host_id": hostID, "run_id": run.ID})
 }
 
 // streamCommand runs one shell line on the existing SSH client, fans

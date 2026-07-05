@@ -21,11 +21,11 @@ func TestCreateRun(t *testing.T) {
 	defer mock.Close()
 
 	now := time.Now()
-	rows := mock.NewRows([]string{"id", "host_id", "run_group_id", "triggered_by", "kind", "status", "exit_code", "started_at", "finished_at", "output", "error"}).
-		AddRow(int32(1), int32(10), nil, "admin", models.RunKindUpdate, models.RunStatusRunning, nil, now, nil, "", nil)
+	rows := mock.NewRows([]string{"id", "host_id", "run_group_id", "triggered_by", "kind", "status", "exit_code", "started_at", "finished_at", "output", "error", "playbook_id"}).
+		AddRow(int32(1), int32(10), nil, "admin", models.RunKindUpdate, models.RunStatusRunning, nil, now, nil, "", nil, nil)
 
 	mock.ExpectQuery(`INSERT INTO update_runs`).
-		WithArgs(int32(10), nil, "admin", models.RunKindUpdate).
+		WithArgs(int32(10), nil, "admin", models.RunKindUpdate, nil).
 		WillReturnRows(rows)
 
 	_, err = db.CreateRun(context.Background(), mock, 10, "admin", models.RunKindUpdate)
@@ -35,7 +35,7 @@ func TestCreateRun(t *testing.T) {
 
 	// Error path
 	mock.ExpectQuery(`INSERT INTO update_runs`).
-		WithArgs(int32(20), nil, "admin", models.RunKindUpdate).
+		WithArgs(int32(20), nil, "admin", models.RunKindUpdate, nil).
 		WillReturnError(errors.New("db error"))
 
 	_, err = db.CreateRun(context.Background(), mock, 20, "admin", models.RunKindUpdate)
@@ -52,11 +52,11 @@ func TestCreateRunWithGroup(t *testing.T) {
 	defer mock.Close()
 
 	now := time.Now()
-	rows := mock.NewRows([]string{"id", "host_id", "run_group_id", "triggered_by", "kind", "status", "exit_code", "started_at", "finished_at", "output", "error"}).
-		AddRow(int32(1), int32(10), "group-123", "admin", models.RunKindUpdate, models.RunStatusRunning, nil, now, nil, "", nil)
+	rows := mock.NewRows([]string{"id", "host_id", "run_group_id", "triggered_by", "kind", "status", "exit_code", "started_at", "finished_at", "output", "error", "playbook_id"}).
+		AddRow(int32(1), int32(10), "group-123", "admin", models.RunKindUpdate, models.RunStatusRunning, nil, now, nil, "", nil, nil)
 
 	mock.ExpectQuery(`INSERT INTO update_runs`).
-		WithArgs(int32(10), "group-123", "admin", models.RunKindUpdate).
+		WithArgs(int32(10), "group-123", "admin", models.RunKindUpdate, nil).
 		WillReturnRows(rows)
 
 	run, err := db.CreateRunWithGroup(context.Background(), mock, 10, "admin", models.RunKindUpdate, "group-123")
@@ -70,7 +70,7 @@ func TestCreateRunWithGroup(t *testing.T) {
 
 	// Error path
 	mock.ExpectQuery(`INSERT INTO update_runs`).
-		WithArgs(int32(20), "group-123", "admin", models.RunKindUpdate).
+		WithArgs(int32(20), "group-123", "admin", models.RunKindUpdate, nil).
 		WillReturnError(errors.New("db error"))
 
 	_, err = db.CreateRunWithGroup(context.Background(), mock, 20, "admin", models.RunKindUpdate, "group-123")
@@ -87,8 +87,8 @@ func TestListRunsForGroup(t *testing.T) {
 	defer mock.Close()
 
 	now := time.Now()
-	rows := mock.NewRows([]string{"id", "host_id", "run_group_id", "triggered_by", "kind", "status", "exit_code", "started_at", "finished_at", "output", "error"}).
-		AddRow(int32(1), int32(10), "group-123", "admin", models.RunKindUpdate, models.RunStatusRunning, nil, now, nil, "", nil)
+	rows := mock.NewRows([]string{"id", "host_id", "run_group_id", "triggered_by", "kind", "status", "exit_code", "started_at", "finished_at", "output", "error", "playbook_id"}).
+		AddRow(int32(1), int32(10), "group-123", "admin", models.RunKindUpdate, models.RunStatusRunning, nil, now, nil, "", nil, nil)
 
 	mock.ExpectQuery(`SELECT (.+) FROM update_runs WHERE run_group_id = \$1`).
 		WithArgs("group-123").
@@ -106,7 +106,7 @@ func TestListRunsForGroup(t *testing.T) {
 	// Nil results
 	mock.ExpectQuery(`SELECT (.+) FROM update_runs WHERE run_group_id = \$1`).
 		WithArgs("group-456").
-		WillReturnRows(mock.NewRows([]string{"id", "host_id", "run_group_id", "triggered_by", "kind", "status", "exit_code", "started_at", "finished_at", "output", "error"}))
+		WillReturnRows(mock.NewRows([]string{"id", "host_id", "run_group_id", "triggered_by", "kind", "status", "exit_code", "started_at", "finished_at", "output", "error", "playbook_id"}))
 
 	runs, err = db.ListRunsForGroup(context.Background(), mock, "group-456")
 	if err != nil {
@@ -225,8 +225,8 @@ func TestListRunsForHost(t *testing.T) {
 	defer mock.Close()
 
 	now := time.Now()
-	rows := mock.NewRows([]string{"id", "host_id", "run_group_id", "triggered_by", "kind", "status", "exit_code", "started_at", "finished_at", "output", "error"}).
-		AddRow(int32(1), int32(10), nil, "admin", models.RunKindUpdate, models.RunStatusRunning, nil, now, nil, "", nil)
+	rows := mock.NewRows([]string{"id", "host_id", "run_group_id", "triggered_by", "kind", "status", "exit_code", "started_at", "finished_at", "output", "error", "playbook_id"}).
+		AddRow(int32(1), int32(10), nil, "admin", models.RunKindUpdate, models.RunStatusRunning, nil, now, nil, "", nil, nil)
 
 	mock.ExpectQuery(`SELECT (.+) FROM update_runs WHERE host_id = \$1 ORDER BY started_at DESC LIMIT \$2`).
 		WithArgs(int32(10), 10).
@@ -244,7 +244,7 @@ func TestListRunsForHost(t *testing.T) {
 	// Test limit defaults (<= 0 or > 100) -> 50
 	mock.ExpectQuery(`SELECT (.+) FROM update_runs WHERE host_id = \$1 ORDER BY started_at DESC LIMIT \$2`).
 		WithArgs(int32(10), 50).
-		WillReturnRows(mock.NewRows([]string{"id", "host_id", "run_group_id", "triggered_by", "kind", "status", "exit_code", "started_at", "finished_at", "output", "error"}))
+		WillReturnRows(mock.NewRows([]string{"id", "host_id", "run_group_id", "triggered_by", "kind", "status", "exit_code", "started_at", "finished_at", "output", "error", "playbook_id"}))
 
 	_, err = db.ListRunsForHost(context.Background(), mock, 10, 0)
 	if err != nil {
@@ -280,8 +280,8 @@ func TestGetRun(t *testing.T) {
 	defer mock.Close()
 
 	now := time.Now()
-	rows := mock.NewRows([]string{"id", "host_id", "run_group_id", "triggered_by", "kind", "status", "exit_code", "started_at", "finished_at", "output", "error"}).
-		AddRow(int32(1), int32(10), nil, "admin", models.RunKindUpdate, models.RunStatusRunning, nil, now, nil, "", nil)
+	rows := mock.NewRows([]string{"id", "host_id", "run_group_id", "triggered_by", "kind", "status", "exit_code", "started_at", "finished_at", "output", "error", "playbook_id"}).
+		AddRow(int32(1), int32(10), nil, "admin", models.RunKindUpdate, models.RunStatusRunning, nil, now, nil, "", nil, nil)
 
 	mock.ExpectQuery(`SELECT (.+) FROM update_runs WHERE id = \$1`).
 		WithArgs(int32(1)).

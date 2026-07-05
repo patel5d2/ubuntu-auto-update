@@ -660,8 +660,8 @@ func TestHandleListRuns_Success(t *testing.T) {
 	defer mock.Close()
 
 	now := time.Now()
-	rows := mock.NewRows([]string{"id", "host_id", "run_group_id", "triggered_by", "kind", "status", "exit_code", "started_at", "finished_at", "output", "error"}).
-		AddRow(int32(1), int32(10), nil, "admin", models.RunKindUpdate, models.RunStatusRunning, nil, now, nil, "", nil)
+	rows := mock.NewRows([]string{"id", "host_id", "run_group_id", "triggered_by", "kind", "status", "exit_code", "started_at", "finished_at", "output", "error", "playbook_id"}).
+		AddRow(int32(1), int32(10), nil, "admin", models.RunKindUpdate, models.RunStatusRunning, nil, now, nil, "", nil, nil)
 
 	mock.ExpectQuery(`SELECT (.+) FROM update_runs WHERE host_id = \$1 ORDER BY started_at DESC LIMIT \$2`).
 		WithArgs(int32(10), 50).
@@ -677,8 +677,8 @@ func TestHandleListRuns_Success(t *testing.T) {
 	}
 
 	// With limit and cap
-	rows2 := mock.NewRows([]string{"id", "host_id", "run_group_id", "triggered_by", "kind", "status", "exit_code", "started_at", "finished_at", "output", "error"}).
-		AddRow(int32(2), int32(10), nil, "admin", models.RunKindUpdate, models.RunStatusRunning, nil, now, nil, "", nil)
+	rows2 := mock.NewRows([]string{"id", "host_id", "run_group_id", "triggered_by", "kind", "status", "exit_code", "started_at", "finished_at", "output", "error", "playbook_id"}).
+		AddRow(int32(2), int32(10), nil, "admin", models.RunKindUpdate, models.RunStatusRunning, nil, now, nil, "", nil, nil)
 
 	mock.ExpectQuery(`SELECT (.+) FROM update_runs WHERE host_id = \$1 ORDER BY started_at DESC LIMIT \$2`).
 		WithArgs(int32(10), 50).
@@ -699,8 +699,8 @@ func TestHandleListRunsByGroup_Success(t *testing.T) {
 	defer mock.Close()
 
 	now := time.Now()
-	rows := mock.NewRows([]string{"id", "host_id", "run_group_id", "triggered_by", "kind", "status", "exit_code", "started_at", "finished_at", "output", "error"}).
-		AddRow(int32(1), int32(10), "12345678-1234-1234-1234-123456789012", "admin", models.RunKindUpdate, models.RunStatusRunning, nil, now, nil, "", nil)
+	rows := mock.NewRows([]string{"id", "host_id", "run_group_id", "triggered_by", "kind", "status", "exit_code", "started_at", "finished_at", "output", "error", "playbook_id"}).
+		AddRow(int32(1), int32(10), "12345678-1234-1234-1234-123456789012", "admin", models.RunKindUpdate, models.RunStatusRunning, nil, now, nil, "", nil, nil)
 
 	mock.ExpectQuery(`SELECT (.+) FROM update_runs WHERE run_group_id = \$1 ORDER BY host_id`).
 		WithArgs("12345678-1234-1234-1234-123456789012").
@@ -776,8 +776,8 @@ func TestHandleGetRun_Success(t *testing.T) {
 	defer mock.Close()
 
 	now := time.Now()
-	rows := mock.NewRows([]string{"id", "host_id", "run_group_id", "triggered_by", "kind", "status", "exit_code", "started_at", "finished_at", "output", "error"}).
-		AddRow(int32(1), int32(10), nil, "admin", models.RunKindUpdate, models.RunStatusRunning, nil, now, nil, "", nil)
+	rows := mock.NewRows([]string{"id", "host_id", "run_group_id", "triggered_by", "kind", "status", "exit_code", "started_at", "finished_at", "output", "error", "playbook_id"}).
+		AddRow(int32(1), int32(10), nil, "admin", models.RunKindUpdate, models.RunStatusRunning, nil, now, nil, "", nil, nil)
 
 	mock.ExpectQuery(`SELECT (.+) FROM update_runs WHERE id = \$1`).
 		WithArgs(int32(1)).

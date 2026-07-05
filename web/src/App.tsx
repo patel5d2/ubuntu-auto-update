@@ -7,6 +7,7 @@ import { ExecuteScript } from './pages/ExecuteScript';
 import { BulkUpdate } from './pages/BulkUpdate';
 import { Overview } from './pages/Overview';
 import { Schedules } from './pages/Schedules';
+import { Playbooks } from './pages/Playbooks';
 import { Settings } from './pages/Settings';
 import { Layout } from './components/Layout';
 import { ToastProvider } from './components/Toast';
@@ -30,6 +31,7 @@ function App() {
                   <Route path="/hosts/:hostId" element={<HostDetail />} />
                   <Route path="/hosts/:hostId/execute-script" element={<ExecuteScript />} />
                   <Route path="/schedules" element={<Schedules />} />
+                  <Route path="/playbooks" element={<Playbooks />} />
                   <Route path="/settings" element={<Settings />} />
                 </Route>
               </Route>

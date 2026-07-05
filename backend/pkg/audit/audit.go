@@ -34,10 +34,16 @@ const (
 	ActionHostKeyInstall = "host.key_install"
 	ActionHostTestConn   = "host.test_connection"
 
-	ActionRunPreview    = "run.preview"
-	ActionRunUpdate     = "run.update"
-	ActionRunBulkUpdate = "run.bulk_update"
-	ActionRunScript     = "run.script"
+	ActionRunPreview      = "run.preview"
+	ActionRunUpdate       = "run.update"
+	ActionRunBulkUpdate   = "run.bulk_update"
+	ActionRunScript       = "run.script"
+	ActionRunPlaybook     = "run.playbook"
+	ActionRunBulkPlaybook = "run.bulk_playbook"
+
+	ActionPlaybookCreate = "playbook.create"
+	ActionPlaybookUpdate = "playbook.update"
+	ActionPlaybookDelete = "playbook.delete"
 
 	ActionWebhookCreate = "webhook.create"
 	ActionWebhookDelete = "webhook.delete"

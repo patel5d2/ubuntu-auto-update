@@ -16,6 +16,8 @@ import (
 	log "github.com/sirupsen/logrus"
 
 	"ubuntu-auto-update/backend/pkg/db"
+	"ubuntu-auto-update/backend/pkg/models"
+	"ubuntu-auto-update/backend/pkg/playbooks"
 	"ubuntu-auto-update/backend/pkg/updater"
 )
 
@@ -28,9 +30,12 @@ type Schedule struct {
 	Enabled         bool      `json:"enabled" db:"enabled"`
 	CreatedBy       string    `json:"created_by" db:"created_by"`
 	CreatedAt       time.Time `json:"created_at" db:"created_at"`
+	// PlaybookID nil ⇒ apt-update schedule (today's behavior); set ⇒ run the
+	// referenced playbook.
+	PlaybookID *int32 `json:"playbook_id" db:"playbook_id"`
 }
 
-const cols = `id, name, host_ids, interval_minutes, next_run_at, enabled, created_by, created_at`
+const cols = `id, name, host_ids, interval_minutes, next_run_at, enabled, created_by, created_at, playbook_id`
 
 func List(ctx context.Context, dbx db.DBTX) ([]Schedule, error) {
 	rows, err := dbx.Query(ctx, `SELECT `+cols+` FROM schedules ORDER BY next_run_at`)
@@ -49,15 +54,19 @@ func List(ctx context.Context, dbx db.DBTX) ([]Schedule, error) {
 
 // Create inserts a schedule. startAt is the first fire time; the zero value
 // means "one interval from now".
-func Create(ctx context.Context, dbx db.DBTX, name string, hostIDs []int32, intervalMinutes int32, startAt time.Time, createdBy string) (Schedule, error) {
+func Create(ctx context.Context, dbx db.DBTX, name string, hostIDs []int32, intervalMinutes int32, startAt time.Time, createdBy string, playbookID *int32) (Schedule, error) {
 	if startAt.IsZero() {
 		startAt = time.Now().Add(time.Duration(intervalMinutes) * time.Minute)
 	}
+	var pbArg interface{}
+	if playbookID != nil {
+		pbArg = *playbookID
+	}
 	rows, err := dbx.Query(ctx, `
-		INSERT INTO schedules (name, host_ids, interval_minutes, next_run_at, created_by)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO schedules (name, host_ids, interval_minutes, next_run_at, created_by, playbook_id)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING `+cols,
-		name, hostIDs, intervalMinutes, startAt, createdBy)
+		name, hostIDs, intervalMinutes, startAt, createdBy, pbArg)
 	if err != nil {
 		return Schedule{}, err
 	}
@@ -138,10 +147,24 @@ func Tick(ctx context.Context, dbx db.DBTX, coord Starter) {
 		if len(s.HostIDs) == 0 {
 			continue
 		}
-		res, err := coord.Start(ctx, updater.BulkRunOptions{
+		opts := updater.BulkRunOptions{
 			HostIDs:     s.HostIDs,
 			TriggeredBy: "schedule:" + s.Name,
-		})
+		}
+		// Playbook schedule: load steps; on error leave the schedule armed for
+		// the next interval. Zero-valued opts (apt path) otherwise — unchanged.
+		if s.PlaybookID != nil {
+			pb, err := playbooks.Get(ctx, dbx, *s.PlaybookID)
+			if err != nil {
+				log.Errorf("scheduler: load playbook %d for %q: %v", *s.PlaybookID, s.Name, err)
+				continue
+			}
+			opts.Kind = models.RunKindPlaybook
+			opts.Steps = pb.Steps
+			opts.UseSudo = pb.UseSudo
+			opts.PlaybookID = s.PlaybookID
+		}
+		res, err := coord.Start(ctx, opts)
 		if err != nil {
 			// A deleted host in the snapshot fails the whole Start; the
 			// schedule stays armed for next interval. Operator sees the log.

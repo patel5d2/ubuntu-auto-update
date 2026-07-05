@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { apiDelete, apiGet, apiPatch, apiPost, createWebSocket } from '../api';
-import type { Host, TestConnectionResult, UpdateRun } from '../types';
+import { apiDelete, apiGet, apiPatch, apiPost, canDoOperator, createWebSocket } from '../api';
+import type { Host, Playbook, TestConnectionResult, UpdateRun } from '../types';
 import { useToast } from '../components/Toast';
 import { useConfirm } from '../components/ConfirmDialog';
 import { Tabs } from '../components/Tabs';
@@ -26,9 +26,14 @@ export function HostDetail() {
   // previously the panel unmounted the instant the stream ended, so a fast
   // run looked like "nothing happened".
   const [liveLines, setLiveLines] = useState<string[]>([]);
-  const [liveKind, setLiveKind] = useState<'preview' | 'update' | null>(null);
-  const [lastKind, setLastKind] = useState<'preview' | 'update' | null>(null);
+  const [liveKind, setLiveKind] = useState<'preview' | 'update' | 'playbook' | null>(null);
+  const [lastKind, setLastKind] = useState<'preview' | 'update' | 'playbook' | null>(null);
   const liveSocketRef = useRef<WebSocket | null>(null);
+
+  // Playbooks (operator only) for the "Run playbook" control.
+  const [playbooks, setPlaybooks] = useState<Playbook[]>([]);
+  const [selectedPlaybook, setSelectedPlaybook] = useState<number | ''>('');
+  const isOperator = canDoOperator();
 
   const toast = useToast();
   const confirm = useConfirm();
@@ -39,6 +44,9 @@ export function HostDetail() {
       console.error('Failed to fetch host:', err);
     });
     refreshRuns(hostId);
+    if (canDoOperator()) {
+      apiGet<Playbook[]>('/api/v1/playbooks').then(setPlaybooks).catch(() => {});
+    }
 
     return () => {
       // Close any in-flight stream on unmount so the websocket goroutine
@@ -54,7 +62,7 @@ export function HostDetail() {
       .catch(err => console.error('Failed to fetch runs:', err));
   };
 
-  const startStream = (kind: 'preview' | 'update') => {
+  const startStream = (kind: 'preview' | 'update' | 'playbook', playbookId?: number) => {
     if (!hostId || liveSocketRef.current) return;
     setLiveKind(kind);
     setLastKind(kind);
@@ -63,7 +71,9 @@ export function HostDetail() {
     const path =
       kind === 'preview'
         ? `/api/v1/hosts/${hostId}/preview-updates`
-        : `/api/v1/hosts/${hostId}/run-update`;
+        : kind === 'playbook'
+          ? `/api/v1/hosts/${hostId}/run-playbook?playbook_id=${playbookId}`
+          : `/api/v1/hosts/${hostId}/run-update`;
 
     const ws = createWebSocket(path);
     liveSocketRef.current = ws;

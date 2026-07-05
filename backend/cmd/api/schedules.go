@@ -16,6 +16,7 @@ import (
 	log "github.com/sirupsen/logrus"
 
 	"ubuntu-auto-update/backend/pkg/middleware"
+	"ubuntu-auto-update/backend/pkg/playbooks"
 	"ubuntu-auto-update/backend/pkg/scheduler"
 )
 
@@ -38,6 +39,7 @@ func (app *Application) handleCreateSchedule(w http.ResponseWriter, r *http.Requ
 		HostIDs         []int32   `json:"host_ids"`
 		IntervalMinutes int32     `json:"interval_minutes"`
 		StartAt         time.Time `json:"start_at,omitempty"`
+		PlaybookID      *int32    `json:"playbook_id,omitempty"` // nil ⇒ apt-update schedule
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "Invalid request body")
@@ -56,12 +58,26 @@ func (app *Application) handleCreateSchedule(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Validate the playbook exists up front so the schedule can't reference a
+	// missing one (the FK would also reject it, but this gives a clean 404).
+	if req.PlaybookID != nil {
+		if _, err := playbooks.Get(r.Context(), app.DB, *req.PlaybookID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeJSONError(w, http.StatusNotFound, "Playbook not found")
+				return
+			}
+			log.Errorf("create schedule playbook lookup: %v", err)
+			writeJSONError(w, http.StatusInternalServerError, "Failed to validate playbook")
+			return
+		}
+	}
+
 	createdBy := "unknown"
 	if user := middleware.GetUserFromContext(r); user != nil {
 		createdBy = user.Username
 	}
 
-	sched, err := scheduler.Create(r.Context(), app.DB, req.Name, req.HostIDs, req.IntervalMinutes, req.StartAt, createdBy)
+	sched, err := scheduler.Create(r.Context(), app.DB, req.Name, req.HostIDs, req.IntervalMinutes, req.StartAt, createdBy, req.PlaybookID)
 	if err != nil {
 		log.Errorf("create schedule: %v", err)
 		writeJSONError(w, http.StatusInternalServerError, "Failed to create schedule")

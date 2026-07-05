@@ -32,6 +32,7 @@ export function Layout() {
           <NavLink to="/overview">Overview</NavLink>
           <NavLink to="/hosts">Hosts</NavLink>
           <NavLink to="/schedules">Schedules</NavLink>
+          {canDoOperator() && <NavLink to="/playbooks">Playbooks</NavLink>}
           {canDoOperator() && <NavLink to="/settings">Settings</NavLink>}
         </nav>
         <div className="sidebar-footer">

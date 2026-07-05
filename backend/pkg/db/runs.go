@@ -9,7 +9,7 @@ import (
 	"ubuntu-auto-update/backend/pkg/models"
 )
 
-const runColumns = `id, host_id, run_group_id, triggered_by, kind, status, exit_code, started_at, finished_at, output, error`
+const runColumns = `id, host_id, run_group_id, triggered_by, kind, status, exit_code, started_at, finished_at, output, error, playbook_id`
 
 // MaxRunOutputBytes caps the size of stored output. Long apt logs blow up
 // the browser and the DB row otherwise; once the cap is reached we append
@@ -19,21 +19,32 @@ const MaxRunOutputBytes = 1 << 20 // 1 MiB
 // CreateRun inserts a new update_runs row in 'running' state and returns
 // the generated id.
 func CreateRun(ctx context.Context, db DBTX, hostID int32, triggeredBy string, kind models.RunKind) (models.UpdateRun, error) {
-	return CreateRunWithGroup(ctx, db, hostID, triggeredBy, kind, "")
+	return CreateRunFull(ctx, db, hostID, triggeredBy, kind, "", nil)
 }
 
 // CreateRunWithGroup is the bulk-aware variant of CreateRun. Pass groupID =
 // "" for single-host runs.
 func CreateRunWithGroup(ctx context.Context, db DBTX, hostID int32, triggeredBy string, kind models.RunKind, groupID string) (models.UpdateRun, error) {
+	return CreateRunFull(ctx, db, hostID, triggeredBy, kind, groupID, nil)
+}
+
+// CreateRunFull is the everything variant: groupID "" and playbookID nil are
+// stored as NULL. CreateRun / CreateRunWithGroup delegate here so their
+// signatures — and every existing call site — stay unchanged.
+func CreateRunFull(ctx context.Context, db DBTX, hostID int32, triggeredBy string, kind models.RunKind, groupID string, playbookID *int32) (models.UpdateRun, error) {
 	var groupArg interface{}
 	if groupID != "" {
 		groupArg = groupID
 	}
+	var pbArg interface{}
+	if playbookID != nil {
+		pbArg = *playbookID
+	}
 	rows, err := db.Query(ctx, `
-		INSERT INTO update_runs (host_id, run_group_id, triggered_by, kind, status, started_at, output)
-		VALUES ($1, $2, $3, $4, 'running', NOW(), '')
+		INSERT INTO update_runs (host_id, run_group_id, triggered_by, kind, status, started_at, output, playbook_id)
+		VALUES ($1, $2, $3, $4, 'running', NOW(), '', $5)
 		RETURNING `+runColumns,
-		hostID, groupArg, triggeredBy, kind)
+		hostID, groupArg, triggeredBy, kind, pbArg)
 	if err != nil {
 		return models.UpdateRun{}, fmt.Errorf("create run: %w", err)
 	}

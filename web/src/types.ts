@@ -26,6 +26,7 @@ export interface Schedule {
   enabled: boolean;
   created_by: string;
   created_at: string;
+  playbook_id: number | null;
 }
 
 export interface Overview {
@@ -44,8 +45,19 @@ export interface Webhook {
   event: string;
 }
 
-export type RunKind = 'preview' | 'update';
+export type RunKind = 'preview' | 'update' | 'playbook';
 export type RunStatus = 'running' | 'succeeded' | 'failed' | 'cancelled';
+
+export interface Playbook {
+  id: number;
+  name: string;
+  description: string;
+  steps: string[];
+  use_sudo: boolean;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
 
 export interface UpdateRun {
   id: number;
@@ -59,6 +71,7 @@ export interface UpdateRun {
   finished_at: string | null;
   output: string;
   error: string | null;
+  playbook_id: number | null;
 }
 
 export interface BulkRunResult {
