@@ -39,6 +39,7 @@ func GenerateCSRFToken() (string, error) {
 // reads this and echoes it as a header. Secure follows ENVIRONMENT=production
 // to match the auth cookie's policy.
 func SetCSRFCookie(w http.ResponseWriter, token string) {
+	// #nosec G124 -- HttpOnly=false is required (JS echoes the token); Secure tracks ENVIRONMENT.
 	http.SetCookie(w, &http.Cookie{
 		Name:     CSRFCookieName,
 		Value:    token,
@@ -52,6 +53,7 @@ func SetCSRFCookie(w http.ResponseWriter, token string) {
 
 // ClearCSRFCookie wipes the cookie on logout.
 func ClearCSRFCookie(w http.ResponseWriter) {
+	// #nosec G124 -- HttpOnly=false is required (JS echoes the token); Secure tracks ENVIRONMENT.
 	http.SetCookie(w, &http.Cookie{
 		Name:     CSRFCookieName,
 		Value:    "",

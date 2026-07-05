@@ -390,7 +390,7 @@ func (d *Dialer) AppendKnownHost(hostname string, key gossh.PublicKey) error {
 			path = "known_hosts"
 		}
 		line := knownhosts.Line([]string{hostname}, key)
-		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600) // #nosec G304 G703 -- path from server env config
 		if err != nil {
 			return fmt.Errorf("open known_hosts: %w", err)
 		}

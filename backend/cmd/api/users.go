@@ -170,7 +170,7 @@ func parseUserID(r *http.Request) (int32, error) {
 	if !ok {
 		return 0, errors.New("missing user id")
 	}
-	id, err := strconv.Atoi(idStr)
+	id, err := strconv.ParseInt(idStr, 10, 32)
 	if err != nil {
 		return 0, err
 	}

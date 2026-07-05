@@ -121,6 +121,7 @@ func GenerateSecureToken() (string, error) {
 
 func SetAuthCookie(w http.ResponseWriter, config *AuthConfig, tokenString string) {
 	isProduction := os.Getenv("ENVIRONMENT") == "production"
+	// #nosec G124 -- Secure intentionally tracks ENVIRONMENT; dev runs over plain http.
 	http.SetCookie(w, &http.Cookie{
 		Name:     config.CookieName,
 		Value:    tokenString,
@@ -134,6 +135,7 @@ func SetAuthCookie(w http.ResponseWriter, config *AuthConfig, tokenString string
 
 func ClearAuthCookie(w http.ResponseWriter, config *AuthConfig) {
 	isProduction := os.Getenv("ENVIRONMENT") == "production"
+	// #nosec G124 -- Secure intentionally tracks ENVIRONMENT; dev runs over plain http.
 	http.SetCookie(w, &http.Cookie{
 		Name:     config.CookieName,
 		Value:    "",

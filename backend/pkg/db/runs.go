@@ -97,7 +97,7 @@ func AppendRunOutput(ctx context.Context, db DBTX, runID int32, chunk string) (b
 func FinishRun(ctx context.Context, db DBTX, runID int32, status models.RunStatus, exitCode int, errMsg string) error {
 	var exit sql.NullInt32
 	if exitCode >= 0 {
-		exit = sql.NullInt32{Int32: int32(exitCode), Valid: true}
+		exit = sql.NullInt32{Int32: int32(exitCode), Valid: true} // #nosec G115 -- SSH exit codes are 0-255
 	}
 	var errVal sql.NullString
 	if errMsg != "" {

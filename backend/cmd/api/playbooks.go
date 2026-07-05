@@ -53,7 +53,7 @@ func cleanSteps(raw []string) ([]string, string) {
 }
 
 func parsePlaybookID(r *http.Request) (int32, error) {
-	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	id, err := strconv.ParseInt(mux.Vars(r)["id"], 10, 32)
 	return int32(id), err
 }
 
@@ -229,7 +229,7 @@ func (app *Application) handleRunPlaybook(w http.ResponseWriter, r *http.Request
 		writeJSONError(w, http.StatusBadRequest, "Invalid host ID")
 		return
 	}
-	pbID, err := strconv.Atoi(r.URL.Query().Get("playbook_id"))
+	pbID, err := strconv.ParseInt(r.URL.Query().Get("playbook_id"), 10, 32)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "playbook_id query param is required")
 		return

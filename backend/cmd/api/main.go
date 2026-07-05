@@ -181,6 +181,20 @@ func main() {
 		EventBroker:   broker,
 	}
 
+	// Bulk + scheduled runs fire the same webhook events as single-host runs.
+	app.BulkUpdater.Notify = func(kind models.RunKind, hostID, runID int32, succeeded bool, errMsg string) {
+		failEvent, successEvent := runEvents(kind)
+		payload := map[string]interface{}{"host_id": hostID, "run_id": runID}
+		event := successEvent
+		if !succeeded {
+			event = failEvent
+			if errMsg != "" {
+				payload["error"] = errMsg
+			}
+		}
+		app.dispatchWebhooks(event, payload)
+	}
+
 	// Bootstrap an initial admin from ADMIN_USERNAME / ADMIN_PASSWORD env
 	// vars. Only takes effect when the users table is empty, so re-deploys
 	// don't quietly clobber a manually-created account.
@@ -593,7 +607,7 @@ func parseHostID(r *http.Request) (int32, error) {
 	if !ok {
 		return 0, errors.New("host id missing")
 	}
-	id, err := strconv.Atoi(idStr)
+	id, err := strconv.ParseInt(idStr, 10, 32)
 	if err != nil {
 		return 0, err
 	}
@@ -910,7 +924,7 @@ func (app *Application) handleListWebhooks(w http.ResponseWriter, r *http.Reques
 
 // handleDeleteWebhook removes a subscription by id.
 func (app *Application) handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	id, err := strconv.ParseInt(mux.Vars(r)["id"], 10, 32)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "Invalid webhook ID")
 		return
@@ -925,7 +939,7 @@ func (app *Application) handleDeleteWebhook(w http.ResponseWriter, r *http.Reque
 		writeJSONError(w, http.StatusNotFound, "Webhook not found")
 		return
 	}
-	app.audit(r, audit.ActionWebhookDelete, "webhook", strconv.Itoa(id), nil)
+	app.audit(r, audit.ActionWebhookDelete, "webhook", strconv.FormatInt(id, 10), nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1568,7 +1582,7 @@ func (app *Application) handleGetRun(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "run id missing")
 		return
 	}
-	id, err := strconv.Atoi(idStr)
+	id, err := strconv.ParseInt(idStr, 10, 32)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "Invalid run ID")
 		return

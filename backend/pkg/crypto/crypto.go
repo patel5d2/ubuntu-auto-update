@@ -64,7 +64,7 @@ func loadKey() ([]byte, error) {
 		keyPath = "encryption.key"
 	}
 
-	key, err := os.ReadFile(keyPath)
+	key, err := os.ReadFile(keyPath) // #nosec G304 G703 -- path from server env config, not request input
 	if err != nil {
 		return nil, fmt.Errorf("read encryption key from %s: %w", keyPath, err)
 	}

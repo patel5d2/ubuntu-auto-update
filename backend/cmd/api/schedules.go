@@ -91,7 +91,7 @@ func (app *Application) handleCreateSchedule(w http.ResponseWriter, r *http.Requ
 func (app *Application) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 
-	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	id, err := strconv.ParseInt(mux.Vars(r)["id"], 10, 32)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "Invalid schedule ID")
 		return
@@ -119,7 +119,7 @@ func (app *Application) handleUpdateSchedule(w http.ResponseWriter, r *http.Requ
 }
 
 func (app *Application) handleDeleteSchedule(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	id, err := strconv.ParseInt(mux.Vars(r)["id"], 10, 32)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "Invalid schedule ID")
 		return

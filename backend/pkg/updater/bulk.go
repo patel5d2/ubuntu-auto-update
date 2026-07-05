@@ -78,6 +78,10 @@ type BulkResult struct {
 type Coordinator struct {
 	Pool   *pgxpool.Pool
 	Dialer *sshpkg.Dialer
+	// Notify, when set, is called once per host as its run reaches a terminal
+	// state. The API layer wires this to webhook dispatch so bulk and
+	// scheduled runs fire the same events as single-host runs.
+	Notify func(kind models.RunKind, hostID, runID int32, succeeded bool, errMsg string)
 	// inFlightGroups remembers which UUIDs are currently active so the API
 	// layer can rate-limit "one group per user" without a DB round trip.
 	mu             sync.Mutex
@@ -123,13 +127,12 @@ func (c *Coordinator) Start(ctx context.Context, opts BulkRunOptions) (BulkResul
 	// Pre-create runs so the UI can render the bulk view straight away.
 	// Failure here is bad enough to bail entirely; we don't want a partial
 	// fan-out where some hosts have rows and others don't.
-	kind := opts.Kind
-	if kind == "" {
-		kind = models.RunKindUpdate
+	if opts.Kind == "" {
+		opts.Kind = models.RunKindUpdate
 	}
 	runIDs := make([]int32, len(opts.HostIDs))
 	for i, hid := range opts.HostIDs {
-		run, err := db.CreateRunFull(ctx, c.Pool, hid, opts.TriggeredBy, kind, groupID, opts.PlaybookID)
+		run, err := db.CreateRunFull(ctx, c.Pool, hid, opts.TriggeredBy, opts.Kind, groupID, opts.PlaybookID)
 		if err != nil {
 			return BulkResult{}, fmt.Errorf("create run for host %d: %w", hid, err)
 		}
@@ -141,7 +144,7 @@ func (c *Coordinator) Start(ctx context.Context, opts BulkRunOptions) (BulkResul
 	c.mu.Unlock()
 
 	// Detach: the HTTP request is done as far as the caller is concerned.
-	go c.run(opts, groupID, runIDs, conc)
+	go c.run(opts, groupID, runIDs, conc) // #nosec G118 -- bulk run intentionally outlives the request
 
 	return BulkResult{GroupID: groupID, RunIDs: runIDs, HostIDs: opts.HostIDs}, nil
 }
@@ -287,6 +290,9 @@ func (c *Coordinator) runOne(ctx context.Context, opts BulkRunOptions, hostID, r
 		defer cancel()
 		if err := db.FinishRun(dbCtx, c.Pool, runID, finishStatus, finishExit, finishErr); err != nil {
 			log.Errorf("bulk: finish run %d: %v", runID, err)
+		}
+		if c.Notify != nil {
+			c.Notify(opts.Kind, hostID, runID, finishStatus == models.RunStatusSucceeded, finishErr)
 		}
 	}()
 

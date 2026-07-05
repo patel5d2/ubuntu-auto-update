@@ -241,7 +241,8 @@ func (s *dbStore) Validate(ctx context.Context, token string) (Principal, bool, 
 	}
 
 	// Bump last_seen_at lazily — fire and forget; ignore failures.
-	go func() {
+	go func() { // #nosec G118 -- fire-and-forget with its own 2s timeout
+
 		bumpCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_, _ = s.pool.Exec(bumpCtx, `UPDATE sessions SET last_seen_at = NOW() WHERE id = $1`, sessionID)
