@@ -133,22 +133,6 @@ func List(ctx context.Context, db db.DBTX) ([]User, error) {
 	return users, nil
 }
 
-// GetByUsername returns ErrUserNotFound if no row matches.
-func GetByUsername(ctx context.Context, db db.DBTX, username string) (User, error) {
-	rows, err := db.Query(ctx, `
-		SELECT id, username, role, disabled_at, created_at, updated_at,
-		       last_login_at, failed_logins, locked_until
-		FROM users WHERE username = $1`, username)
-	if err != nil {
-		return User{}, err
-	}
-	u, err := pgx.CollectExactlyOneRow(rows, pgx.RowToStructByPos[User])
-	if errors.Is(err, pgx.ErrNoRows) {
-		return User{}, ErrUserNotFound
-	}
-	return u, err
-}
-
 // CountUsers reports the total number of rows. Used at boot to decide whether
 // to seed the bootstrap admin account.
 func CountUsers(ctx context.Context, db db.DBTX) (int, error) {

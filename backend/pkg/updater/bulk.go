@@ -510,12 +510,39 @@ func (c *Coordinator) rebootAndWait(ctx context.Context, client *gossh.Client, h
 	if err != nil {
 		return fmt.Errorf("ssh session: %w", err)
 	}
-	// The connection dying mid-command is the expected outcome; ignore the
-	// command result and close everything so the poll below starts clean.
-	_ = sess.Start(cmd)
-	time.Sleep(2 * time.Second)
+	// Two legitimate outcomes: the connection dies mid-command (reboot is
+	// happening — proceed to poll) or the command returns quickly with a
+	// clean failure (no sudo rights, no shutdown binary — fail fast instead
+	// of burning the whole reboot wait on a host that never went down).
+	out, runErr := func() ([]byte, error) {
+		type result struct {
+			out []byte
+			err error
+		}
+		done := make(chan result, 1)
+		go func() {
+			o, e := sess.CombinedOutput(cmd)
+			done <- result{o, e}
+		}()
+		select {
+		case r := <-done:
+			return r.out, r.err
+		case <-time.After(10 * time.Second):
+			return nil, nil // still running/connection dropping — reboot in progress
+		}
+	}()
 	sess.Close()
 	client.Close()
+	// A clean non-zero exit means the command itself failed (no sudo rights,
+	// no shutdown binary) — fail fast. Other errors (EOF, closed connection)
+	// are the reboot tearing the session down, which is the point.
+	if _, isExit := runErr.(*gossh.ExitError); isExit {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = runErr.Error()
+		}
+		return fmt.Errorf("reboot command failed: %s", msg)
+	}
 	_, _ = db.AppendRunOutput(ctx, c.Pool, runID, "reboot issued; waiting for the host to come back...\n")
 
 	pollCtx, cancel := context.WithTimeout(ctx, rebootWait)

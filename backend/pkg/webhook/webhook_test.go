@@ -23,7 +23,7 @@ func TestSend_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	err := Send(server.URL, map[string]string{"key": "value"})
+	err := SendWithContext(context.Background(), server.URL, map[string]string{"key": "value"})
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestSend_ServerError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	err := Send(server.URL, map[string]string{"key": "value"})
+	err := SendWithContext(context.Background(), server.URL, map[string]string{"key": "value"})
 	if err == nil {
 		t.Error("expected error for server error response")
 	}
@@ -48,7 +48,7 @@ func TestSend_NetworkError(t *testing.T) {
 	skipSSRFCheck = true
 	defer func() { skipSSRFCheck = false }()
 
-	err := Send("http://127.0.0.1:1", map[string]string{"key": "value"})
+	err := SendWithContext(context.Background(), "http://127.0.0.1:1", map[string]string{"key": "value"})
 	if err == nil {
 		t.Error("expected error for unreachable server")
 	}
@@ -79,7 +79,7 @@ func TestSend_InvalidPayload(t *testing.T) {
 	skipSSRFCheck = true
 	defer func() { skipSSRFCheck = false }()
 
-	err := Send("http://localhost", make(chan int))
+	err := SendWithContext(context.Background(), "http://localhost", make(chan int))
 	if err == nil {
 		t.Error("expected error for unmarshalable payload")
 	}

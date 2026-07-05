@@ -27,6 +27,10 @@ services:
       retries: 10
 
   app:
+    # Local builds and the published image share this tag, so both paths work:
+    #   build+run:     docker compose up -d --build
+    #   pull-and-run:  docker compose pull app && docker compose up -d --no-build
+    image: ghcr.io/patel5d2/ubuntu-auto-update:latest
     build:
       context: .
       dockerfile: Dockerfile

@@ -131,20 +131,6 @@ func TestList_Empty(t *testing.T) {
 	}
 }
 
-// ── GetByUsername ─────────────────────────────────────────────────────────
-
-func TestGetByUsername_NotFound(t *testing.T) {
-	mock := newMock(t)
-	rows := mock.NewRows([]string{"id", "username", "role", "disabled_at", "created_at", "updated_at",
-		"last_login_at", "failed_logins", "locked_until"})
-	mock.ExpectQuery(`SELECT .+ FROM users WHERE username`).WithArgs("ghost").WillReturnRows(rows)
-
-	_, err := GetByUsername(context.Background(), mock, "ghost")
-	if err != ErrUserNotFound {
-		t.Errorf("expected ErrUserNotFound, got %v", err)
-	}
-}
-
 // ── SetPassword ───────────────────────────────────────────────────────────
 
 func TestSetPassword_TooShort(t *testing.T) {

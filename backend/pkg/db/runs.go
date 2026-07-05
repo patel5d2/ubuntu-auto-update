@@ -16,21 +16,8 @@ const runColumns = `id, host_id, run_group_id, triggered_by, kind, status, exit_
 // a single truncation marker and stop persisting further writes.
 const MaxRunOutputBytes = 1 << 20 // 1 MiB
 
-// CreateRun inserts a new update_runs row in 'running' state and returns
-// the generated id.
-func CreateRun(ctx context.Context, db DBTX, hostID int32, triggeredBy string, kind models.RunKind) (models.UpdateRun, error) {
-	return CreateRunFull(ctx, db, hostID, triggeredBy, kind, "", nil)
-}
-
-// CreateRunWithGroup is the bulk-aware variant of CreateRun. Pass groupID =
-// "" for single-host runs.
-func CreateRunWithGroup(ctx context.Context, db DBTX, hostID int32, triggeredBy string, kind models.RunKind, groupID string) (models.UpdateRun, error) {
-	return CreateRunFull(ctx, db, hostID, triggeredBy, kind, groupID, nil)
-}
-
-// CreateRunFull is the everything variant: groupID "" and playbookID nil are
-// stored as NULL. CreateRun / CreateRunWithGroup delegate here so their
-// signatures — and every existing call site — stay unchanged.
+// CreateRunFull inserts a new update_runs row in 'running' state. groupID ""
+// and playbookID nil are stored as NULL.
 func CreateRunFull(ctx context.Context, db DBTX, hostID int32, triggeredBy string, kind models.RunKind, groupID string, playbookID *int32) (models.UpdateRun, error) {
 	var groupArg interface{}
 	if groupID != "" {

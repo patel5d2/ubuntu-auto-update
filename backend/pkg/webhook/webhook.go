@@ -59,11 +59,6 @@ func IsSafeURL(target string) error {
 	return nil
 }
 
-// Send delivers a webhook payload to the specified URL with proper timeout and context.
-func Send(url string, payload interface{}) error {
-	return SendWithContext(context.Background(), url, payload)
-}
-
 // SendWithContext delivers a webhook payload with context support for cancellation.
 func SendWithContext(ctx context.Context, url string, payload interface{}) error {
 	if !skipSSRFCheck {

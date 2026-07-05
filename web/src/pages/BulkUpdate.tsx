@@ -75,7 +75,9 @@ export function BulkUpdate() {
     <article>
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.5rem' }}>
         <div>
-          <h2 style={{ margin: 0 }}>Bulk update</h2>
+          <h2 style={{ margin: 0 }}>
+            {runs[0]?.kind === 'playbook' ? 'Bulk playbook' : runs[0]?.kind === 'reboot' ? 'Bulk reboot' : 'Bulk update'}
+          </h2>
           <small style={{ opacity: 0.7 }}>Group <code>{groupId}</code></small>
         </div>
         <Link to="/hosts" role="button" className="secondary" style={{ width: 'auto' }}>

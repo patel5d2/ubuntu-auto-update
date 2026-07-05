@@ -68,6 +68,10 @@ export function Schedules() {
       toast.show('Name and at least one host are required.', 'error');
       return;
     }
+    if (windowEnabled && windowDays === 0) {
+      toast.show('Select at least one day for the maintenance window.', 'error');
+      return;
+    }
     setSubmitting(true);
     try {
       const body: Record<string, unknown> = {
@@ -95,6 +99,12 @@ export function Schedules() {
       setSelected(new Set());
       setStartAt('');
       setPlaybookId('');
+      setConcurrency(0);
+      setCanaryCount(0);
+      setCanaryWait(120);
+      setAbortPct(0);
+      setWindowEnabled(false);
+      setWindowDays(127);
       setCreating(false);
       refresh();
     } catch (err) {

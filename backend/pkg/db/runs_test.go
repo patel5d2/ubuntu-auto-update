@@ -28,7 +28,7 @@ func TestCreateRun(t *testing.T) {
 		WithArgs(int32(10), nil, "admin", models.RunKindUpdate, nil).
 		WillReturnRows(rows)
 
-	_, err = db.CreateRun(context.Background(), mock, 10, "admin", models.RunKindUpdate)
+	_, err = db.CreateRunFull(context.Background(), mock, 10, "admin", models.RunKindUpdate, "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestCreateRun(t *testing.T) {
 		WithArgs(int32(20), nil, "admin", models.RunKindUpdate, nil).
 		WillReturnError(errors.New("db error"))
 
-	_, err = db.CreateRun(context.Background(), mock, 20, "admin", models.RunKindUpdate)
+	_, err = db.CreateRunFull(context.Background(), mock, 20, "admin", models.RunKindUpdate, "", nil)
 	if err == nil {
 		t.Error("expected error")
 	}
@@ -59,7 +59,7 @@ func TestCreateRunWithGroup(t *testing.T) {
 		WithArgs(int32(10), "group-123", "admin", models.RunKindUpdate, nil).
 		WillReturnRows(rows)
 
-	run, err := db.CreateRunWithGroup(context.Background(), mock, 10, "admin", models.RunKindUpdate, "group-123")
+	run, err := db.CreateRunFull(context.Background(), mock, 10, "admin", models.RunKindUpdate, "group-123", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestCreateRunWithGroup(t *testing.T) {
 		WithArgs(int32(20), "group-123", "admin", models.RunKindUpdate, nil).
 		WillReturnError(errors.New("db error"))
 
-	_, err = db.CreateRunWithGroup(context.Background(), mock, 20, "admin", models.RunKindUpdate, "group-123")
+	_, err = db.CreateRunFull(context.Background(), mock, 20, "admin", models.RunKindUpdate, "group-123", nil)
 	if err == nil {
 		t.Error("expected error")
 	}

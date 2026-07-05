@@ -47,29 +47,6 @@ func TestSendForbiddenError(t *testing.T) {
 	}
 }
 
-func TestSendNotFoundError(t *testing.T) {
-	rr := httptest.NewRecorder()
-	SendNotFoundError(rr, "Host")
-	if rr.Code != http.StatusNotFound {
-		t.Errorf("got %d, want 404", rr.Code)
-	}
-	var resp ErrorResponse
-	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to parse response: %v", err)
-	}
-	if resp.Message != "Host not found" {
-		t.Errorf("got %q, want 'Host not found'", resp.Message)
-	}
-}
-
-func TestSendValidationError(t *testing.T) {
-	rr := httptest.NewRecorder()
-	SendValidationError(rr, "email", "invalid format")
-	if rr.Code != http.StatusBadRequest {
-		t.Errorf("got %d, want 400", rr.Code)
-	}
-}
-
 func TestErrorHandler_PanicRecovery(t *testing.T) {
 	handler := ErrorHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		panic("test panic")

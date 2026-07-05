@@ -96,14 +96,6 @@ func SendErrorResponse(w http.ResponseWriter, statusCode int, error string, mess
 	}
 }
 
-// SendValidationError sends a validation error response
-func SendValidationError(w http.ResponseWriter, field string, message string) {
-	details := map[string]interface{}{
-		"field": field,
-	}
-	SendErrorResponse(w, http.StatusBadRequest, "validation_error", message, details)
-}
-
 // SendAuthError sends an authentication error response
 func SendAuthError(w http.ResponseWriter, message string) {
 	SendErrorResponse(w, http.StatusUnauthorized, "authentication_error", message, nil)
@@ -112,15 +104,6 @@ func SendAuthError(w http.ResponseWriter, message string) {
 // SendForbiddenError sends a forbidden error response
 func SendForbiddenError(w http.ResponseWriter, message string) {
 	SendErrorResponse(w, http.StatusForbidden, "forbidden", message, nil)
-}
-
-// SendNotFoundError sends a not found error response
-func SendNotFoundError(w http.ResponseWriter, resource string) {
-	message := "Resource not found"
-	if resource != "" {
-		message = resource + " not found"
-	}
-	SendErrorResponse(w, http.StatusNotFound, "not_found", message, nil)
 }
 
 func getCurrentTimestamp() string {

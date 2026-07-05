@@ -183,34 +183,6 @@ func RequireRole(required string) func(http.Handler) http.Handler {
 	}
 }
 
-// RoleMiddleware is the legacy variant kept for compatibility. Delegates to
-// the principal-aware path when one is available, otherwise falls back to the
-// User context.
-func RoleMiddleware(requiredRole string) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if p := GetPrincipalFromContext(r); p != nil {
-				if !p.HasRole(requiredRole) {
-					SendForbiddenError(w, fmt.Sprintf("Role %s required", requiredRole))
-					return
-				}
-				next.ServeHTTP(w, r)
-				return
-			}
-			user := GetUserFromContext(r)
-			if user == nil {
-				SendAuthError(w, "User context not found")
-				return
-			}
-			if user.Role != "admin" && user.Role != requiredRole {
-				SendForbiddenError(w, fmt.Sprintf("Role %s required", requiredRole))
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Auth middlewares.
 // ---------------------------------------------------------------------------

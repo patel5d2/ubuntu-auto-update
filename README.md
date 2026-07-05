@@ -38,7 +38,16 @@ cd ubuntu-auto-update
 # API:     http://localhost:8080/api/v1/health
 ```
 
-`quickstart.sh up` is the one-command path. Other helpers:
+`quickstart.sh up` is the one-command path (builds locally). To run the
+pre-built image from GHCR instead of building:
+
+```bash
+cp .env.example .env                       # fill in ADMIN_PASSWORD + ENROLLMENT_TOKEN
+docker compose pull app
+docker compose up -d --no-build
+```
+
+Other helpers:
 
 | Command                  | What it does |
 |--------------------------|--------------|

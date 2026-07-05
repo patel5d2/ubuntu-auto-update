@@ -90,6 +90,12 @@ func (app *Application) handleCreateSchedule(w http.ResponseWriter, r *http.Requ
 			writeJSONError(w, http.StatusBadRequest, "window minutes must be 0-1439 and start must differ from end")
 			return
 		}
+		// window_days 0 with an explicit window means "no days selected" —
+		// reject rather than silently normalizing to every day.
+		if req.WindowDays == 0 {
+			writeJSONError(w, http.StatusBadRequest, "window_days must select at least one day")
+			return
+		}
 	}
 	if req.SecurityOnly && req.PlaybookID != nil {
 		writeJSONError(w, http.StatusBadRequest, "security_only applies to apt schedules; remove playbook_id")

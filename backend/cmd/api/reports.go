@@ -85,15 +85,23 @@ func (app *Application) handleComplianceReport(w http.ResponseWriter, r *http.Re
 		}
 		return t.UTC().Format(time.RFC3339)
 	}
+	// Hostnames/tags/OS are agent-supplied; a value like =HYPERLINK(...)
+	// executes as a formula when the CSV opens in Excel/Sheets. Neutralize.
+	safe := func(v string) string {
+		if v != "" && strings.ContainsRune("=+-@", rune(v[0])) {
+			return "'" + v
+		}
+		return v
+	}
 	for _, row := range report {
 		status := ""
 		if row.LastAttemptStatus != nil {
 			status = *row.LastAttemptStatus
 		}
 		_ = cw.Write([]string{
-			row.Hostname,
-			strings.Join(row.Tags, " "),
-			row.OsVersion,
+			safe(row.Hostname),
+			safe(strings.Join(row.Tags, " ")),
+			safe(row.OsVersion),
 			strconv.Itoa(row.PackagesAvailable),
 			strconv.FormatBool(row.RebootRequired),
 			strconv.FormatBool(row.OfflineSince == nil),
