@@ -136,6 +136,23 @@ STATUS=$(curl -s -o /dev/null -w '%{http_code}' "$API/hosts" -H "Authorization: 
 [ "$STATUS" = "401" ] || fail "revoked PAT still accepted (HTTP $STATUS)"
 echo "   PAT mint/use/revoke OK"
 
+echo "== compliance report (JSON + CSV) + hosts pagination =="
+curl -sf "$API/reports/compliance" -H "$AUTH" | python3 -c '
+import sys, json
+rows = json.load(sys.stdin)
+assert len(rows) == 1 and rows[0]["hostname"] == "e2e-target", rows
+assert rows[0]["last_success_at"], "last successful update missing after the apt run"
+print("   compliance JSON OK")' || fail "compliance JSON assertions"
+CSV=$(curl -sf "$API/reports/compliance?format=csv" -H "$AUTH")
+echo "$CSV" | head -1 | grep -q "hostname,tags" || fail "csv header missing"
+echo "$CSV" | grep -q "e2e-target" || fail "csv row missing"
+echo "   compliance CSV OK"
+N=$(curl -sf "$API/hosts?limit=1&offset=0" -H "$AUTH" | python3 -c 'import sys,json;print(len(json.load(sys.stdin)))')
+[ "$N" = "1" ] || fail "hosts pagination returned $N rows, want 1"
+STATUS=$(curl -s -o /dev/null -w '%{http_code}' "$API/hosts?limit=9999" -H "$AUTH")
+[ "$STATUS" = "400" ] || fail "limit cap not enforced (HTTP $STATUS)"
+echo "   hosts pagination OK"
+
 echo "== playbook_failure webhook dispatch =="
 curl -sf -X POST "$API/webhooks" -H "$AUTH" -H 'Content-Type: application/json' \
     -d '{"url":"http://e2e-sink.invalid/hook","event":"playbook_failure"}' >/dev/null

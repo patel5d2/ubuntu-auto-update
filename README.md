@@ -101,7 +101,8 @@ scripts/    build.sh, test.sh wrappers for all three components
 | POST   | `/api/v1/logout`                                  | public      | Best-effort token revocation |
 | POST   | `/api/v1/enroll`                                  | enrollment  | Agent → long-lived bearer token |
 | POST   | `/api/v1/report`                                  | bearer      | Agent uploads update output |
-| GET    | `/api/v1/hosts`                                   | bearer      | List all hosts |
+| GET    | `/api/v1/hosts`                                   | bearer      | List hosts (optional `?limit=&offset=`) |
+| GET    | `/api/v1/reports/compliance`                      | bearer      | Fleet patch-status report (`?format=csv` to export) |
 | POST   | `/api/v1/hosts`                                   | bearer      | Operator-create a host (no agent) |
 | GET    | `/api/v1/hosts/{id}`                              | bearer      | Host detail |
 | PATCH  | `/api/v1/hosts/{id}`                              | bearer      | Edit `ssh_user` and/or `tags` |

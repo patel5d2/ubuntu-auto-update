@@ -127,6 +127,24 @@ func SweepOfflineHosts(ctx context.Context, db DBTX, thresholdMinutes int) ([]mo
 	return pgx.CollectRows(rows, pgx.RowToStructByName[models.Host])
 }
 
+// ListHostsPage is the paginated variant for API/automation consumers.
+func ListHostsPage(ctx context.Context, db DBTX, limit, offset int) ([]models.Host, error) {
+	rows, err := db.Query(ctx,
+		`SELECT `+hostColumns+` FROM hosts ORDER BY hostname LIMIT $1 OFFSET $2`,
+		limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	hosts, err := pgx.CollectRows(rows, pgx.RowToStructByName[models.Host])
+	if err != nil {
+		return nil, err
+	}
+	if hosts == nil {
+		hosts = []models.Host{}
+	}
+	return hosts, nil
+}
+
 // CreateHost inserts a new host record. Returns ErrDuplicateHostname if a
 // row with the same hostname already exists. Use UpsertHost only from the
 // agent-report path; operator-driven creation should be strict.

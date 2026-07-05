@@ -7,6 +7,7 @@ import { ExecuteScript } from './pages/ExecuteScript';
 import { BulkUpdate } from './pages/BulkUpdate';
 import { Overview } from './pages/Overview';
 import { Schedules } from './pages/Schedules';
+import { Compliance } from './pages/Compliance';
 import { Playbooks } from './pages/Playbooks';
 import { Settings } from './pages/Settings';
 import { Layout } from './components/Layout';
@@ -32,6 +33,7 @@ function App() {
                   <Route path="/hosts/:hostId/execute-script" element={<ExecuteScript />} />
                   <Route path="/schedules" element={<Schedules />} />
                   <Route path="/playbooks" element={<Playbooks />} />
+                  <Route path="/compliance" element={<Compliance />} />
                   <Route path="/settings" element={<Settings />} />
                 </Route>
               </Route>

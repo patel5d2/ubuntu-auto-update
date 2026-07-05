@@ -321,6 +321,7 @@ func main() {
 	viewer := api.PathPrefix("").Subrouter()
 	viewer.Use(middleware.RequireRole(session.RoleViewer))
 	viewer.HandleFunc("/hosts", app.handleListHosts).Methods(http.MethodGet)
+	viewer.HandleFunc("/reports/compliance", app.handleComplianceReport).Methods(http.MethodGet)
 	viewer.HandleFunc("/hosts/{id}", app.handleGetHost).Methods(http.MethodGet)
 	viewer.HandleFunc("/hosts/{id}/runs", app.handleListRuns).Methods(http.MethodGet)
 	viewer.HandleFunc("/runs", app.handleListRunsByGroup).Methods(http.MethodGet)
@@ -669,7 +670,29 @@ func (app *Application) handleReport(w http.ResponseWriter, r *http.Request) {
 }
 
 func (app *Application) handleListHosts(w http.ResponseWriter, r *http.Request) {
-	hosts, err := db.ListHosts(r.Context(), app.DB)
+	// Optional pagination for API/automation consumers; the dashboard omits
+	// both params and keeps getting the full list (client-side filtering
+	// needs it). limit is capped at 500 per page.
+	var hosts []models.Host
+	var err error
+	if r.URL.Query().Get("limit") != "" || r.URL.Query().Get("offset") != "" {
+		limit, lerr := strconv.ParseInt(r.URL.Query().Get("limit"), 10, 32)
+		if lerr != nil || limit < 1 || limit > 500 {
+			writeJSONError(w, http.StatusBadRequest, "limit must be 1-500")
+			return
+		}
+		offset := int64(0)
+		if v := r.URL.Query().Get("offset"); v != "" {
+			offset, lerr = strconv.ParseInt(v, 10, 32)
+			if lerr != nil || offset < 0 {
+				writeJSONError(w, http.StatusBadRequest, "offset must be >= 0")
+				return
+			}
+		}
+		hosts, err = db.ListHostsPage(r.Context(), app.DB, int(limit), int(offset))
+	} else {
+		hosts, err = db.ListHosts(r.Context(), app.DB)
+	}
 	if err != nil {
 		log.Errorf("Failed to list hosts: %v", err)
 		writeJSONError(w, http.StatusInternalServerError, "Failed to retrieve hosts")
