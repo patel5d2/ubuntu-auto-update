@@ -1,5 +1,5 @@
 # Development Dockerfile for Go Backend
-FROM golang:1.25-alpine AS base
+FROM golang:1.26-alpine AS base
 
 # Install system dependencies
 RUN apk add --no-cache \

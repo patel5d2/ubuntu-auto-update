@@ -202,7 +202,8 @@ func isIDSegment(s string) bool {
 	// UUID-shaped segments (36 chars with dashes).
 	if len(s) == 36 {
 		for _, c := range s {
-			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') || c == '-') {
+			hexOrDash := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') || c == '-'
+			if !hexOrDash {
 				return false
 			}
 		}

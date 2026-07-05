@@ -1,0 +1,14 @@
+# golangci-lint v2 config. v2 removed v1's default exclusions, which would
+# flag every idiomatic `defer x.Close()`; these presets restore them.
+version: "2"
+linters:
+  exclusions:
+    presets:
+      - std-error-handling
+      - common-false-positives
+  settings:
+    errcheck:
+      exclude-functions:
+        # Writing the JSON response body: an error here means the client
+        # disconnected mid-response; there is nothing useful to do with it.
+        - (*encoding/json.Encoder).Encode

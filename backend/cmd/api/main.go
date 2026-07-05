@@ -537,7 +537,7 @@ func (app *Application) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"token": tok, "role": u.Role, "csrf_token": csrf})
+		_ = json.NewEncoder(w).Encode(map[string]string{"token": tok, "role": u.Role, "csrf_token": csrf})
 		return
 	}
 
@@ -566,7 +566,7 @@ func (app *Application) handleLogin(w http.ResponseWriter, r *http.Request) {
 	middleware.SetAuthCookie(w, app.AuthConfig, authToken)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"token": authToken})
+	_ = json.NewEncoder(w).Encode(map[string]string{"token": authToken})
 }
 
 // handleMe returns the current principal so the UI can branch on role
@@ -578,7 +578,7 @@ func (app *Application) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"username": p.Username,
 		"role":     p.Role,
 		"is_agent": p.IsAgent(),
@@ -1291,7 +1291,7 @@ func (app *Application) handleExecuteScript(w http.ResponseWriter, r *http.Reque
 	session, err := sshClient.NewSession()
 	if err != nil {
 		log.Errorf("Failed to create SSH session: %v", err)
-		conn.WriteMessage(websocket.TextMessage, []byte("Failed to create SSH session: "+err.Error()))
+		_ = conn.WriteMessage(websocket.TextMessage, []byte("Failed to create SSH session: "+err.Error()))
 		return
 	}
 	defer session.Close()
@@ -1299,9 +1299,9 @@ func (app *Application) handleExecuteScript(w http.ResponseWriter, r *http.Reque
 	output, err := session.CombinedOutput(scriptStr)
 	if err != nil {
 		log.Errorf("Script execution failed: %v", err)
-		conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("Script execution failed: %s", err.Error())))
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("Script execution failed: %s", err.Error())))
 	}
-	conn.WriteMessage(websocket.TextMessage, output)
+	_ = conn.WriteMessage(websocket.TextMessage, output)
 }
 
 // previewCommands runs read-only and never escalates privileges.
@@ -1403,7 +1403,7 @@ func (app *Application) runHostCommandOpts(w http.ResponseWriter, r *http.Reques
 	run, err := db.CreateRunFull(dbCtx, app.DB, hostID, triggeredBy, kind, "", playbookID)
 	if err != nil {
 		log.Errorf("Failed to create run row: %v", err)
-		conn.WriteMessage(websocket.TextMessage, []byte("Failed to create run record: "+err.Error()))
+		_ = conn.WriteMessage(websocket.TextMessage, []byte("Failed to create run record: "+err.Error()))
 		return
 	}
 	emit(conn, fmt.Sprintf("[run #%d started by %s]\n", run.ID, triggeredBy))
