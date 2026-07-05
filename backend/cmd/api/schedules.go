@@ -40,6 +40,18 @@ func (app *Application) handleCreateSchedule(w http.ResponseWriter, r *http.Requ
 		IntervalMinutes int32     `json:"interval_minutes"`
 		StartAt         time.Time `json:"start_at,omitempty"`
 		PlaybookID      *int32    `json:"playbook_id,omitempty"` // nil ⇒ apt-update schedule
+
+		// Rollout knobs; zero = coordinator defaults (same as the bulk API).
+		Concurrency       int32 `json:"concurrency,omitempty"`
+		CanaryCount       int32 `json:"canary_count,omitempty"`
+		CanaryWaitSeconds int32 `json:"canary_wait_seconds,omitempty"`
+		AbortOnFailurePct int32 `json:"abort_on_failure_pct,omitempty"`
+
+		// Maintenance window, minutes since midnight UTC; both or neither.
+		WindowStartMinute *int32 `json:"window_start_minute,omitempty"`
+		WindowEndMinute   *int32 `json:"window_end_minute,omitempty"`
+		WindowDays        int16  `json:"window_days,omitempty"`   // bitmask, 0 ⇒ every day
+		SecurityOnly      bool   `json:"security_only,omitempty"` // apt schedules only
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "Invalid request body")
@@ -55,6 +67,32 @@ func (app *Application) handleCreateSchedule(w http.ResponseWriter, r *http.Requ
 		return
 	case req.IntervalMinutes < 5:
 		writeJSONError(w, http.StatusBadRequest, "interval_minutes must be at least 5")
+		return
+	case req.Concurrency < 0 || req.Concurrency > 20:
+		writeJSONError(w, http.StatusBadRequest, "concurrency must be 0-20")
+		return
+	case req.CanaryCount < 0 || req.CanaryWaitSeconds < 0 || req.CanaryWaitSeconds > 3600:
+		writeJSONError(w, http.StatusBadRequest, "canary_count must be >= 0 and canary_wait_seconds 0-3600")
+		return
+	case req.AbortOnFailurePct < 0 || req.AbortOnFailurePct > 100:
+		writeJSONError(w, http.StatusBadRequest, "abort_on_failure_pct must be 0-100")
+		return
+	case (req.WindowStartMinute == nil) != (req.WindowEndMinute == nil):
+		writeJSONError(w, http.StatusBadRequest, "window_start_minute and window_end_minute must be set together")
+		return
+	case req.WindowDays < 0 || req.WindowDays > 127:
+		writeJSONError(w, http.StatusBadRequest, "window_days must be a 7-bit mask (1-127)")
+		return
+	}
+	if req.WindowStartMinute != nil {
+		s, e := *req.WindowStartMinute, *req.WindowEndMinute
+		if s < 0 || s > 1439 || e < 0 || e > 1439 || s == e {
+			writeJSONError(w, http.StatusBadRequest, "window minutes must be 0-1439 and start must differ from end")
+			return
+		}
+	}
+	if req.SecurityOnly && req.PlaybookID != nil {
+		writeJSONError(w, http.StatusBadRequest, "security_only applies to apt schedules; remove playbook_id")
 		return
 	}
 
@@ -77,7 +115,22 @@ func (app *Application) handleCreateSchedule(w http.ResponseWriter, r *http.Requ
 		createdBy = user.Username
 	}
 
-	sched, err := scheduler.Create(r.Context(), app.DB, req.Name, req.HostIDs, req.IntervalMinutes, req.StartAt, createdBy, req.PlaybookID)
+	sched, err := scheduler.Create(r.Context(), app.DB, scheduler.CreateOptions{
+		Name:              req.Name,
+		HostIDs:           req.HostIDs,
+		IntervalMinutes:   req.IntervalMinutes,
+		StartAt:           req.StartAt,
+		CreatedBy:         createdBy,
+		PlaybookID:        req.PlaybookID,
+		Concurrency:       req.Concurrency,
+		CanaryCount:       req.CanaryCount,
+		CanaryWaitSeconds: req.CanaryWaitSeconds,
+		AbortOnFailurePct: req.AbortOnFailurePct,
+		WindowStartMinute: req.WindowStartMinute,
+		WindowEndMinute:   req.WindowEndMinute,
+		WindowDays:        req.WindowDays,
+		SecurityOnly:      req.SecurityOnly,
+	})
 	if err != nil {
 		log.Errorf("create schedule: %v", err)
 		writeJSONError(w, http.StatusInternalServerError, "Failed to create schedule")

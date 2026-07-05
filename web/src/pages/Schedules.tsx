@@ -18,7 +18,17 @@ export function Schedules() {
   const [name, setName] = useState('');
   const [intervalHours, setIntervalHours] = useState(24);
   const [startAt, setStartAt] = useState(''); // datetime-local value
-  const [playbookId, setPlaybookId] = useState<number | ''>(''); // '' = apt upgrade
+  // '' = apt upgrade, 'security' = security-only apt, number = playbook id
+  const [playbookId, setPlaybookId] = useState<number | '' | 'security'>('');
+  // Rollout knobs (0 = coordinator defaults) + optional UTC maintenance window.
+  const [concurrency, setConcurrency] = useState(0);
+  const [canaryCount, setCanaryCount] = useState(0);
+  const [canaryWait, setCanaryWait] = useState(120);
+  const [abortPct, setAbortPct] = useState(0);
+  const [windowEnabled, setWindowEnabled] = useState(false);
+  const [windowStart, setWindowStart] = useState('02:00');
+  const [windowEnd, setWindowEnd] = useState('05:00');
+  const [windowDays, setWindowDays] = useState(127); // bit 0 = Sunday
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [submitting, setSubmitting] = useState(false);
 
@@ -66,7 +76,19 @@ export function Schedules() {
         interval_minutes: Math.round(intervalHours * 60),
       };
       if (startAt) body.start_at = new Date(startAt).toISOString();
-      if (playbookId !== '') body.playbook_id = playbookId;
+      if (playbookId === 'security') body.security_only = true;
+      else if (playbookId !== '') body.playbook_id = playbookId;
+      if (concurrency > 0) body.concurrency = concurrency;
+      if (canaryCount > 0) {
+        body.canary_count = canaryCount;
+        body.canary_wait_seconds = canaryWait;
+        body.abort_on_failure_pct = abortPct;
+      }
+      if (windowEnabled) {
+        body.window_start_minute = toMinutes(windowStart);
+        body.window_end_minute = toMinutes(windowEnd);
+        body.window_days = windowDays;
+      }
       await apiPost<Schedule>('/api/v1/schedules', body);
       toast.show('Schedule created.', 'success');
       setName('');
@@ -154,15 +176,76 @@ export function Schedules() {
                 Runs
                 <select
                   value={playbookId}
-                  onChange={e => setPlaybookId(e.target.value === '' ? '' : Number(e.target.value))}
+                  onChange={e => {
+                    const v = e.target.value;
+                    setPlaybookId(v === '' || v === 'security' ? v : Number(v));
+                  }}
                 >
                   <option value="">apt upgrade (default)</option>
+                  <option value="security">security updates only</option>
                   {playbooks.map(pb => (
                     <option key={pb.id} value={pb.id}>{pb.name}</option>
                   ))}
                 </select>
               </label>
             </div>
+
+            <details>
+              <summary>Rollout & maintenance window (advanced)</summary>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(10rem, 1fr))', gap: '0.75rem', marginTop: '0.5rem' }}>
+                <label>
+                  Concurrency
+                  <input type="number" min={0} max={20} value={concurrency} onChange={e => setConcurrency(Number(e.target.value))} />
+                  <small>0 = default (5)</small>
+                </label>
+                <label>
+                  Canary hosts
+                  <input type="number" min={0} value={canaryCount} onChange={e => setCanaryCount(Number(e.target.value))} />
+                  <small>0 = no canary wave</small>
+                </label>
+                <label>
+                  Wait after canary (s)
+                  <input type="number" min={0} max={3600} value={canaryWait} onChange={e => setCanaryWait(Number(e.target.value))} disabled={canaryCount === 0} />
+                </label>
+                <label>
+                  Abort at failures ≥ (%)
+                  <input type="number" min={0} max={100} value={abortPct} onChange={e => setAbortPct(Number(e.target.value))} disabled={canaryCount === 0} />
+                </label>
+              </div>
+
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', marginTop: '0.5rem' }}>
+                <input type="checkbox" role="switch" checked={windowEnabled} onChange={e => setWindowEnabled(e.target.checked)} />
+                Only run inside a maintenance window (UTC)
+              </label>
+              {windowEnabled && (
+                <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', alignItems: 'center', marginTop: '0.5rem' }}>
+                  <label style={{ marginBottom: 0 }}>
+                    From
+                    <input type="time" value={windowStart} onChange={e => setWindowStart(e.target.value)} style={{ width: 'auto' }} />
+                  </label>
+                  <label style={{ marginBottom: 0 }}>
+                    To
+                    <input type="time" value={windowEnd} onChange={e => setWindowEnd(e.target.value)} style={{ width: 'auto' }} />
+                  </label>
+                  <span style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                    {DAY_LABELS.map((d, i) => (
+                      <label key={d} style={{ display: 'inline-flex', alignItems: 'center', gap: '0.2rem', marginBottom: 0 }}>
+                        <input
+                          type="checkbox"
+                          checked={(windowDays & (1 << i)) !== 0}
+                          onChange={() => setWindowDays(v => v ^ (1 << i))}
+                        />
+                        {d}
+                      </label>
+                    ))}
+                  </span>
+                  <small style={{ flexBasis: '100%', opacity: 0.7 }}>
+                    A due schedule outside the window waits for the next opening.
+                    Windows past midnight (e.g. 22:00–02:00) belong to the start day.
+                  </small>
+                </div>
+              )}
+            </details>
 
             <fieldset>
               <legend>Hosts ({selected.size} selected)</legend>
@@ -210,9 +293,14 @@ export function Schedules() {
                 <td>
                   {s.playbook_id != null
                     ? playbooks.find(p => p.id === s.playbook_id)?.name ?? `playbook #${s.playbook_id}`
-                    : 'apt upgrade'}
+                    : s.security_only ? 'security updates' : 'apt upgrade'}
                 </td>
-                <td>{formatInterval(s.interval_minutes)}</td>
+                <td>
+                  {formatInterval(s.interval_minutes)}
+                  {s.window_start_minute != null && s.window_end_minute != null && (
+                    <><br /><small>{fmtMinute(s.window_start_minute)}–{fmtMinute(s.window_end_minute)} UTC</small></>
+                  )}
+                </td>
                 <td>{s.enabled ? <RelativeTime time={s.next_run_at} /> : '—'}</td>
                 <td>
                   <input
@@ -235,6 +323,17 @@ export function Schedules() {
       )}
     </div>
   );
+}
+
+const DAY_LABELS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+
+function toMinutes(hhmm: string): number {
+  const [h, m] = hhmm.split(':').map(Number);
+  return h * 60 + m;
+}
+
+function fmtMinute(minutes: number): string {
+  return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
 }
 
 function formatInterval(minutes: number): string {

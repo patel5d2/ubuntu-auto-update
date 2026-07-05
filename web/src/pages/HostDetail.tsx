@@ -122,6 +122,26 @@ export function HostDetail() {
     startStream('update');
   };
 
+  const handleReboot = async () => {
+    if (!host) return;
+    const ok = await confirm({
+      title: `Reboot ${host.hostname}?`,
+      message:
+        'The host reboots immediately. The run succeeds once it comes back online (up to 10 minutes) and is recorded in History.',
+      destructive: true,
+      confirmLabel: 'Reboot host',
+      cancelLabel: 'Cancel',
+    });
+    if (!ok) return;
+    try {
+      await apiPost('/api/v1/hosts/bulk/reboot', { host_ids: [host.id] });
+      toast.show('Reboot started — watch History for the result.', 'success');
+      if (hostId) refreshRuns(hostId);
+    } catch (err) {
+      toast.show(err instanceof Error ? err.message : 'Failed to start reboot.', 'error');
+    }
+  };
+
   const handleSaveKey = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setSavingKey(true);
@@ -299,6 +319,16 @@ export function HostDetail() {
                 Execute Script
               </button>
             </Link>
+            <button
+              type="button"
+              className="secondary"
+              onClick={handleReboot}
+              disabled={isStreaming}
+              style={{ width: 'auto', ...(host.reboot_required ? { borderColor: 'var(--bad)', color: 'var(--bad)' } : {}) }}
+              title={host.reboot_required ? 'Kernel/package update needs a reboot' : undefined}
+            >
+              {host.reboot_required ? '⟳ Reboot required' : 'Reboot'}
+            </button>
             <button
               type="button"
               className="contrast"

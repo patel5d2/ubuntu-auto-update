@@ -30,6 +30,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"ubuntu-auto-update/backend/pkg/apitokens"
 	"ubuntu-auto-update/backend/pkg/audit"
 	"ubuntu-auto-update/backend/pkg/config"
 	"ubuntu-auto-update/backend/pkg/db"
@@ -300,7 +301,14 @@ func main() {
 
 	// Authenticated routes (any role).
 	api := r.PathPrefix("/api/v1").Subrouter()
-	api.Use(middleware.SessionAuthMiddleware(sessionStore, authConfig))
+	api.Use(middleware.SessionAuthMiddleware(sessionStore, authConfig,
+		func(ctx context.Context, tok string) (session.Principal, bool, error) {
+			t, ok, err := apitokens.Validate(ctx, dbPool, tok)
+			if err != nil || !ok {
+				return session.Principal{}, false, err
+			}
+			return session.Principal{Username: "token:" + t.Name, Role: t.Role}, true, nil
+		}))
 
 	// /report is agent-only — we explicitly require RoleAgent rather than
 	// relying on a handler-level check. Without this any logged-in viewer
@@ -345,6 +353,7 @@ func main() {
 	op.HandleFunc("/hosts/bulk/enroll", app.handleBulkEnroll).Methods(http.MethodPost)
 	op.HandleFunc("/hosts/bulk/run-update", app.handleBulkRunUpdate).Methods(http.MethodPost)
 	op.HandleFunc("/hosts/bulk/run-playbook", app.handleBulkRunPlaybook).Methods(http.MethodPost)
+	op.HandleFunc("/hosts/bulk/reboot", app.handleBulkReboot).Methods(http.MethodPost)
 	op.HandleFunc("/hosts/{id}/run-playbook", app.handleRunPlaybook).Methods(http.MethodGet)
 	op.HandleFunc("/playbooks", app.handleCreatePlaybook).Methods(http.MethodPost)
 	op.HandleFunc("/playbooks/{id}", app.handleGetPlaybook).Methods(http.MethodGet)
@@ -370,6 +379,9 @@ func main() {
 	admin.HandleFunc("/users/{id}", app.handleUpdateUser).Methods(http.MethodPatch)
 	admin.HandleFunc("/users/{id}", app.handleDeleteUser).Methods(http.MethodDelete)
 	admin.HandleFunc("/audit", app.handleListAudit).Methods(http.MethodGet)
+	admin.HandleFunc("/tokens", app.handleListAPITokens).Methods(http.MethodGet)
+	admin.HandleFunc("/tokens", app.handleCreateAPIToken).Methods(http.MethodPost)
+	admin.HandleFunc("/tokens/{id}", app.handleDeleteAPIToken).Methods(http.MethodDelete)
 
 	// Fallback to serving the frontend React application
 	spa := spaHandler{staticPath: "public", indexPath: "index.html"}
@@ -1275,26 +1287,6 @@ var previewCommands = []string{
 	"apt list --upgradable",
 }
 
-// updateCommandTemplate is built per-host because it changes based on whether
-// the configured ssh_user is root. The flags neutralize the most common
-// dpkg interactive prompts during apt-get upgrade.
-const aptNoninteractive = `DEBIAN_FRONTEND=noninteractive ` +
-	`apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" -y `
-
-// buildUpdateScript returns the shell line that does an actual upgrade.
-// Non-root users get a `sudo -n` prefix so the operation fails fast (rather
-// than hanging on a password prompt) when passwordless sudo isn't set up.
-func buildUpdateScript(sshUser string) string {
-	prefix := ""
-	if sshUser != "" && sshUser != "root" {
-		prefix = "sudo -n "
-	}
-	return "set -o pipefail; " +
-		"echo '== ubuntu-auto-update: update =='; " +
-		prefix + aptNoninteractive + "update && " +
-		prefix + aptNoninteractive + "upgrade"
-}
-
 // handlePreviewUpdates runs read-only `apt list --upgradable` over SSH and
 // streams output back to the client. Persists a 'preview' update_runs row
 // for history.
@@ -1328,7 +1320,8 @@ func (app *Application) handleRunUpdate(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, http.StatusInternalServerError, "Failed to retrieve host")
 		return
 	}
-	app.runHostCommand(w, r, id, models.RunKindUpdate, []string{buildUpdateScript(host.SshUser)})
+	securityOnly := r.URL.Query().Get("security_only") == "1" || r.URL.Query().Get("security_only") == "true"
+	app.runHostCommand(w, r, id, models.RunKindUpdate, []string{updater.BuildUpdateScript(host.SshUser, securityOnly)})
 }
 
 // runHostCommand is the shared engine for preview/update WebSockets. It:
@@ -1345,6 +1338,8 @@ func runEvents(kind models.RunKind) (failEvent, successEvent string) {
 	switch kind {
 	case models.RunKindPlaybook:
 		return "playbook_failure", "playbook_success"
+	case models.RunKindReboot:
+		return "reboot_failure", "reboot_success"
 	case models.RunKindUpdate:
 		return "update_failure", "update_success"
 	default: // preview
@@ -1603,6 +1598,7 @@ func (app *Application) handleBulkRunUpdate(w http.ResponseWriter, r *http.Reque
 		CanaryCount       int     `json:"canary_count,omitempty"`
 		CanaryWaitSeconds int     `json:"canary_wait_seconds,omitempty"`
 		AbortOnFailurePct int     `json:"abort_on_failure_pct,omitempty"`
+		SecurityOnly      bool    `json:"security_only,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "Invalid request body")
@@ -1637,6 +1633,7 @@ func (app *Application) handleBulkRunUpdate(w http.ResponseWriter, r *http.Reque
 		CanaryCount:       req.CanaryCount,
 		CanaryWaitSeconds: req.CanaryWaitSeconds,
 		AbortOnFailurePct: req.AbortOnFailurePct,
+		SecurityOnly:      req.SecurityOnly,
 	})
 	if err != nil {
 		log.Errorf("bulk update start failed: %v", err)

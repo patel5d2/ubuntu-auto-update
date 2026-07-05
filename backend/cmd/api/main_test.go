@@ -851,36 +851,3 @@ func TestHandleGetRun_InvalidID(t *testing.T) {
 		t.Errorf("expected 400 for invalid run id, got %d", rr.Code)
 	}
 }
-
-// --- buildUpdateScript ---
-
-func TestBuildUpdateScript_RootHasNoSudo(t *testing.T) {
-	got := buildUpdateScript("root")
-	if contains := stringContains(got, "sudo "); contains {
-		t.Errorf("root user should not have sudo prefix; got: %s", got)
-	}
-}
-
-func TestBuildUpdateScript_NonRootGetsSudoN(t *testing.T) {
-	got := buildUpdateScript("ubuntu")
-	if !stringContains(got, "sudo -n ") {
-		t.Errorf("non-root user should have `sudo -n ` prefix; got: %s", got)
-	}
-}
-
-func stringContains(haystack, needle string) bool {
-	return len(haystack) > 0 && len(needle) > 0 &&
-		// avoid pulling in strings just for this — main.go already imports it
-		// but tests run in the same package, so we can use it directly:
-		// (Imported via the tests already needing strings indirectly.)
-		indexOf(haystack, needle) >= 0
-}
-
-func indexOf(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
-}

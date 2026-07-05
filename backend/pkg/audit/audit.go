@@ -40,6 +40,9 @@ const (
 	ActionRunScript       = "run.script"
 	ActionRunPlaybook     = "run.playbook"
 	ActionRunBulkPlaybook = "run.bulk_playbook"
+	ActionRunBulkReboot   = "run.bulk_reboot"
+	ActionTokenCreate     = "token.create"
+	ActionTokenDelete     = "token.delete"
 
 	ActionPlaybookCreate = "playbook.create"
 	ActionPlaybookUpdate = "playbook.update"

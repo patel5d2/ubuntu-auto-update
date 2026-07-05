@@ -65,38 +65,6 @@ func TestShouldAbort_Boundary(t *testing.T) {
 	}
 }
 
-func TestBuildUpdateScript_Root(t *testing.T) {
-	s := buildUpdateScript("root")
-	if strings.Contains(s, "sudo") {
-		t.Error("root user script should not contain sudo")
-	}
-	if !strings.Contains(s, "apt-get") {
-		t.Error("expected apt-get in script")
-	}
-	if !strings.Contains(s, "pipefail") {
-		t.Error("expected pipefail in script")
-	}
-}
-
-func TestBuildUpdateScript_NonRoot(t *testing.T) {
-	s := buildUpdateScript("ubuntu")
-	if !strings.Contains(s, "sudo -n") {
-		t.Errorf("non-root script should use sudo -n, got: %s", s)
-	}
-	if !strings.Contains(s, "apt-get") {
-		t.Error("expected apt-get in script")
-	}
-}
-
-func TestBuildUpdateScript_EmptyUser(t *testing.T) {
-	// Empty user is treated as non-root (gets sudo)
-	s := buildUpdateScript("")
-	// Should not panic and should contain apt-get
-	if !strings.Contains(s, "apt-get") {
-		t.Error("expected apt-get even with empty user")
-	}
-}
-
 func TestCoordinator_InFlightCount_Empty(t *testing.T) {
 	c := &Coordinator{inFlightGroups: make(map[string]struct{})}
 	if n := c.InFlightCount(); n != 0 {
@@ -137,4 +105,32 @@ func TestSkipRemaining_EmptySlice(t *testing.T) {
 	c := &Coordinator{inFlightGroups: make(map[string]struct{})}
 	// Should not panic
 	c.skipRemaining([]int32{}, []int32{}, "test reason")
+}
+
+func TestBuildUpdateScript(t *testing.T) {
+	cases := []struct {
+		user     string
+		security bool
+		want     []string
+		absent   []string
+	}{
+		{"root", false, []string{"apt-get", "upgrade"}, []string{"sudo -n", "unattended-upgrade"}},
+		{"ubuntu", false, []string{"sudo -n DEBIAN_FRONTEND"}, []string{"unattended-upgrade"}},
+		{"root", true, []string{"unattended-upgrade -v"}, []string{"sudo -n"}},
+		{"ubuntu", true, []string{"sudo -n unattended-upgrade -v"}, nil},
+		{"", false, []string{"apt-get", "pipefail"}, []string{"sudo"}},
+	}
+	for _, c := range cases {
+		got := BuildUpdateScript(c.user, c.security)
+		for _, w := range c.want {
+			if !strings.Contains(got, w) {
+				t.Errorf("BuildUpdateScript(%q, %v) missing %q:\n%s", c.user, c.security, w, got)
+			}
+		}
+		for _, a := range c.absent {
+			if strings.Contains(got, a) {
+				t.Errorf("BuildUpdateScript(%q, %v) must not contain %q:\n%s", c.user, c.security, a, got)
+			}
+		}
+	}
 }

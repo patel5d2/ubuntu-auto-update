@@ -33,9 +33,27 @@ type Schedule struct {
 	// PlaybookID nil ⇒ apt-update schedule (today's behavior); set ⇒ run the
 	// referenced playbook.
 	PlaybookID *int32 `json:"playbook_id" db:"playbook_id"`
+
+	// Rollout knobs passed straight to the bulk coordinator; zero = its
+	// defaults, i.e. the behavior before these columns existed.
+	Concurrency       int32 `json:"concurrency" db:"concurrency"`
+	CanaryCount       int32 `json:"canary_count" db:"canary_count"`
+	CanaryWaitSeconds int32 `json:"canary_wait_seconds" db:"canary_wait_seconds"`
+	AbortOnFailurePct int32 `json:"abort_on_failure_pct" db:"abort_on_failure_pct"`
+
+	// Maintenance window in minutes since midnight UTC; nil start = no
+	// window. WindowDays is a bitmask (bit 0 = Sunday … bit 6 = Saturday)
+	// keyed to the window's start day.
+	WindowStartMinute *int32 `json:"window_start_minute" db:"window_start_minute"`
+	WindowEndMinute   *int32 `json:"window_end_minute" db:"window_end_minute"`
+	WindowDays        int16  `json:"window_days" db:"window_days"`
+
+	// SecurityOnly (apt schedules only): unattended-upgrade instead of a
+	// blanket apt-get upgrade.
+	SecurityOnly bool `json:"security_only" db:"security_only"`
 }
 
-const cols = `id, name, host_ids, interval_minutes, next_run_at, enabled, created_by, created_at, playbook_id`
+const cols = `id, name, host_ids, interval_minutes, next_run_at, enabled, created_by, created_at, playbook_id, concurrency, canary_count, canary_wait_seconds, abort_on_failure_pct, window_start_minute, window_end_minute, window_days, security_only`
 
 func List(ctx context.Context, dbx db.DBTX) ([]Schedule, error) {
 	rows, err := dbx.Query(ctx, `SELECT `+cols+` FROM schedules ORDER BY next_run_at`)
@@ -52,25 +70,96 @@ func List(ctx context.Context, dbx db.DBTX) ([]Schedule, error) {
 	return scheds, nil
 }
 
-// Create inserts a schedule. startAt is the first fire time; the zero value
-// means "one interval from now".
-func Create(ctx context.Context, dbx db.DBTX, name string, hostIDs []int32, intervalMinutes int32, startAt time.Time, createdBy string, playbookID *int32) (Schedule, error) {
-	if startAt.IsZero() {
-		startAt = time.Now().Add(time.Duration(intervalMinutes) * time.Minute)
+// CreateOptions carries everything a new schedule needs. Zero-valued knobs
+// mean coordinator defaults; nil window means "no maintenance window";
+// WindowDays 0 is normalized to 127 (every day).
+type CreateOptions struct {
+	Name            string
+	HostIDs         []int32
+	IntervalMinutes int32
+	StartAt         time.Time // zero = one interval from now
+	CreatedBy       string
+	PlaybookID      *int32
+
+	Concurrency       int32
+	CanaryCount       int32
+	CanaryWaitSeconds int32
+	AbortOnFailurePct int32
+
+	WindowStartMinute *int32
+	WindowEndMinute   *int32
+	WindowDays        int16
+
+	SecurityOnly bool
+}
+
+// Create inserts a schedule.
+func Create(ctx context.Context, dbx db.DBTX, o CreateOptions) (Schedule, error) {
+	if o.StartAt.IsZero() {
+		o.StartAt = time.Now().Add(time.Duration(o.IntervalMinutes) * time.Minute)
+	}
+	if o.WindowDays == 0 {
+		o.WindowDays = 127
 	}
 	var pbArg interface{}
-	if playbookID != nil {
-		pbArg = *playbookID
+	if o.PlaybookID != nil {
+		pbArg = *o.PlaybookID
 	}
 	rows, err := dbx.Query(ctx, `
-		INSERT INTO schedules (name, host_ids, interval_minutes, next_run_at, created_by, playbook_id)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO schedules (name, host_ids, interval_minutes, next_run_at, created_by, playbook_id,
+		                       concurrency, canary_count, canary_wait_seconds, abort_on_failure_pct,
+		                       window_start_minute, window_end_minute, window_days, security_only)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		RETURNING `+cols,
-		name, hostIDs, intervalMinutes, startAt, createdBy, pbArg)
+		o.Name, o.HostIDs, o.IntervalMinutes, o.StartAt, o.CreatedBy, pbArg,
+		o.Concurrency, o.CanaryCount, o.CanaryWaitSeconds, o.AbortOnFailurePct,
+		o.WindowStartMinute, o.WindowEndMinute, o.WindowDays, o.SecurityOnly)
 	if err != nil {
 		return Schedule{}, err
 	}
 	return pgx.CollectExactlyOneRow(rows, pgx.RowToStructByName[Schedule])
+}
+
+// InWindow reports whether now falls inside the schedule's maintenance
+// window. Schedules without a window are always in it. A window that wraps
+// midnight (start > end) belongs to its start day: with days = Sat only and
+// window 22:00–02:00, Sunday 01:00 UTC is IN (Saturday's window).
+func (s Schedule) InWindow(now time.Time) bool {
+	if s.WindowStartMinute == nil || s.WindowEndMinute == nil {
+		return true
+	}
+	start, end := int(*s.WindowStartMinute), int(*s.WindowEndMinute)
+	now = now.UTC()
+	minute := now.Hour()*60 + now.Minute()
+	dayOK := func(d time.Weekday) bool { return s.WindowDays&(1<<uint(d)) != 0 }
+	if start <= end {
+		return dayOK(now.Weekday()) && minute >= start && minute < end
+	}
+	if minute >= start {
+		return dayOK(now.Weekday())
+	}
+	if minute < end {
+		return dayOK(now.Add(-24 * time.Hour).Weekday())
+	}
+	return false
+}
+
+// NextWindowStart returns the next moment the window opens after now.
+// Schedules without a window return now unchanged.
+func (s Schedule) NextWindowStart(now time.Time) time.Time {
+	if s.WindowStartMinute == nil {
+		return now
+	}
+	start := time.Duration(*s.WindowStartMinute) * time.Minute
+	now = now.UTC()
+	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 8; i++ {
+		candidate := midnight.AddDate(0, 0, i).Add(start)
+		if candidate.After(now) && s.WindowDays&(1<<uint(candidate.Weekday())) != 0 {
+			return candidate
+		}
+	}
+	return now.Add(24 * time.Hour) // defensive; unreachable while days >= 1
 }
 
 // SetEnabled toggles a schedule. Re-enabling pushes next_run_at forward so a
@@ -143,13 +232,30 @@ func Tick(ctx context.Context, dbx db.DBTX, coord Starter) {
 		log.Errorf("scheduler: claim due: %v", err)
 		return
 	}
+	now := time.Now()
 	for _, s := range due {
 		if len(s.HostIDs) == 0 {
 			continue
 		}
+		// Outside the maintenance window: defer to its next opening instead
+		// of the claimed now+interval, so the run fires when the window opens.
+		if !s.InWindow(now) {
+			next := s.NextWindowStart(now)
+			if _, err := dbx.Exec(ctx, `UPDATE schedules SET next_run_at = $2 WHERE id = $1`, s.ID, next); err != nil {
+				log.Errorf("scheduler: defer %q to window: %v", s.Name, err)
+			} else {
+				log.Infof("scheduler: %q outside window; deferred to %s", s.Name, next.Format(time.RFC3339))
+			}
+			continue
+		}
 		opts := updater.BulkRunOptions{
-			HostIDs:     s.HostIDs,
-			TriggeredBy: "schedule:" + s.Name,
+			HostIDs:           s.HostIDs,
+			TriggeredBy:       "schedule:" + s.Name,
+			Concurrency:       int(s.Concurrency),
+			CanaryCount:       int(s.CanaryCount),
+			CanaryWaitSeconds: int(s.CanaryWaitSeconds),
+			AbortOnFailurePct: int(s.AbortOnFailurePct),
+			SecurityOnly:      s.SecurityOnly,
 		}
 		// Playbook schedule: load steps; on error leave the schedule armed for
 		// the next interval. Zero-valued opts (apt path) otherwise — unchanged.

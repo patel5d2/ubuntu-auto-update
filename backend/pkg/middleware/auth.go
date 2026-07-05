@@ -270,15 +270,41 @@ func TokenAuthMiddleware(store *TokenStore, config *AuthConfig) func(http.Handle
 	}
 }
 
+// APITokenValidator resolves a presented long-lived API token (uat_… prefix)
+// to a principal. Implemented in cmd/api over pkg/apitokens; optional so
+// tests and legacy setups run without it.
+type APITokenValidator func(ctx context.Context, token string) (session.Principal, bool, error)
+
 // SessionAuthMiddleware validates against a pkg/session.Store. This is the
 // production path: it gives us shared state across replicas, agent vs. user
 // distinction, and richer principal data (role, user id, session id).
-func SessionAuthMiddleware(store session.Store, config *AuthConfig) func(http.Handler) http.Handler {
+// An optional APITokenValidator handles uat_-prefixed API tokens.
+func SessionAuthMiddleware(store session.Store, config *AuthConfig, pats ...APITokenValidator) func(http.Handler) http.Handler {
+	var pat APITokenValidator
+	if len(pats) > 0 {
+		pat = pats[0]
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			tok := extractToken(r, config.CookieName)
 			if tok == "" {
 				SendAuthError(w, "No authentication token provided")
+				return
+			}
+			if pat != nil && strings.HasPrefix(tok, "uat_") {
+				p, ok, err := pat(r.Context(), tok)
+				if err != nil {
+					log.Errorf("api token validate: %v", err)
+					SendAuthError(w, "Authentication temporarily unavailable")
+					return
+				}
+				if !ok {
+					SendAuthError(w, "Invalid API token")
+					return
+				}
+				ctx := context.WithValue(r.Context(), PrincipalContextKey, &p)
+				ctx = context.WithValue(ctx, UserContextKey, &User{Username: p.Username, Role: p.Role})
+				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
 			p, ok, err := store.Validate(r.Context(), tok)

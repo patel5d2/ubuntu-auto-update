@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -73,6 +74,14 @@ type BulkRunOptions struct {
 
 	// RunTimeout bounds the whole run; zero means DefaultRunTimeout.
 	RunTimeout time.Duration
+
+	// SecurityOnly switches the apt path to security updates only
+	// (unattended-upgrade). Ignored for playbook runs.
+	SecurityOnly bool
+
+	// Reboot replaces the command run entirely: issue a reboot over SSH and
+	// wait for the host to come back (Kind should be RunKindReboot).
+	Reboot bool
 }
 
 // BulkResult is what we hand back to the API caller. RunIDs is parallel to
@@ -318,7 +327,17 @@ func (c *Coordinator) runOne(ctx context.Context, opts BulkRunOptions, hostID, r
 	}
 	defer client.Close()
 
-	cmds := []string{buildUpdateScript(host.SshUser)}
+	if opts.Reboot {
+		if err := c.rebootAndWait(ctx, client, host, hostID, runID); err != nil {
+			finishErr = err.Error()
+			return false
+		}
+		finishStatus = models.RunStatusSucceeded
+		finishExit = 0
+		return true
+	}
+
+	cmds := []string{BuildUpdateScript(host.SshUser, opts.SecurityOnly)}
 	if len(opts.Steps) > 0 {
 		cmds = playbooks.CompileSteps(opts.Steps, host.SshUser, opts.UseSudo)
 	}
@@ -411,19 +430,30 @@ func pumpToRun(pool *pgxpool.Pool, runID int32, src io.Reader) {
 	}
 }
 
-// buildUpdateScript mirrors the same logic in cmd/api/main.go. Kept local so
-// the updater package doesn't import cmd. The two should stay in sync; if
-// they diverge, lift into a shared helper.
+// aptNoninteractive neutralizes the most common dpkg prompts during upgrades.
 const aptNoninteractive = `DEBIAN_FRONTEND=noninteractive ` +
 	`apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" -y `
 
-func buildUpdateScript(sshUser string) string {
+// BuildUpdateScript returns the shell line for an update run — the single
+// source shared by the bulk coordinator and the single-host engine in
+// cmd/api. securityOnly swaps the blanket `apt-get upgrade` for
+// `unattended-upgrade -v`, which applies only packages from its allowed
+// origins (Ubuntu's security pocket by default; the package ships installed
+// on Ubuntu). Non-root users get `sudo -n` so a missing passwordless sudo
+// fails fast instead of hanging on a password prompt.
+func BuildUpdateScript(sshUser string, securityOnly bool) string {
 	prefix := ""
 	if sshUser != "" && sshUser != "root" {
 		prefix = "sudo -n "
 	}
+	if securityOnly {
+		return "set -o pipefail; " +
+			"echo '== ubuntu-auto-update: security-only update =='; " +
+			prefix + aptNoninteractive + "update && " +
+			prefix + "unattended-upgrade -v"
+	}
 	return "set -o pipefail; " +
-		"echo '== ubuntu-auto-update: bulk update =='; " +
+		"echo '== ubuntu-auto-update: update =='; " +
 		prefix + aptNoninteractive + "update && " +
 		prefix + aptNoninteractive + "upgrade"
 }
@@ -439,4 +469,85 @@ func newUUID() (string, error) {
 	b[8] = (b[8] & 0x3f) | 0x80
 	hexStr := hex.EncodeToString(b[:])
 	return hexStr[0:8] + "-" + hexStr[8:12] + "-" + hexStr[12:16] + "-" + hexStr[16:20] + "-" + hexStr[20:32], nil
+}
+
+// rebootWait bounds how long a rebooted host gets to come back before the
+// run is marked failed. ponytail: fixed 10 minutes; make it a knob when a
+// real fleet has slower iron.
+const rebootWait = 10 * time.Minute
+
+// quickOutput runs one short command on an existing client and returns its
+// trimmed stdout.
+func quickOutput(client *gossh.Client, cmd string) (string, error) {
+	sess, err := client.NewSession()
+	if err != nil {
+		return "", err
+	}
+	defer sess.Close()
+	out, err := sess.Output(cmd)
+	return strings.TrimSpace(string(out)), err
+}
+
+// rebootAndWait issues a reboot and waits for the host to come back.
+// "Came back" means the kernel boot_id changed — airtight on real hosts. As
+// a fallback (containers and other environments share the host kernel's
+// boot_id), a host that was observed down and then reachable again also
+// counts.
+func (c *Coordinator) rebootAndWait(ctx context.Context, client *gossh.Client, host models.Host, hostID, runID int32) error {
+	prefix := ""
+	if host.SshUser != "" && host.SshUser != "root" {
+		prefix = "sudo -n "
+	}
+
+	bootID, err := quickOutput(client, "cat /proc/sys/kernel/random/boot_id")
+	if err != nil {
+		return fmt.Errorf("read boot_id: %w", err)
+	}
+
+	cmd := prefix + "shutdown -r now"
+	_, _ = db.AppendRunOutput(ctx, c.Pool, runID, "$ "+cmd+"\n")
+	sess, err := client.NewSession()
+	if err != nil {
+		return fmt.Errorf("ssh session: %w", err)
+	}
+	// The connection dying mid-command is the expected outcome; ignore the
+	// command result and close everything so the poll below starts clean.
+	_ = sess.Start(cmd)
+	time.Sleep(2 * time.Second)
+	sess.Close()
+	client.Close()
+	_, _ = db.AppendRunOutput(ctx, c.Pool, runID, "reboot issued; waiting for the host to come back...\n")
+
+	pollCtx, cancel := context.WithTimeout(ctx, rebootWait)
+	defer cancel()
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	wentDown := false
+	for {
+		select {
+		case <-pollCtx.Done():
+			return fmt.Errorf("host did not come back within %s", rebootWait)
+		case <-ticker.C:
+		}
+		probe, _, err := c.Dialer.ConnectToHost(pollCtx, hostID)
+		if err != nil {
+			wentDown = true
+			continue
+		}
+		newID, idErr := quickOutput(probe, "cat /proc/sys/kernel/random/boot_id")
+		probe.Close()
+		if idErr == nil && newID != "" && newID != bootID {
+			_, _ = db.AppendRunOutput(ctx, c.Pool, runID, "host is back (new boot_id "+newID+")\n")
+			return nil
+		}
+		if wentDown {
+			// ponytail: containers share the host kernel's boot_id — going
+			// down and returning is the best signal available there.
+			_, _ = db.AppendRunOutput(ctx, c.Pool, runID, "host is back (went down and returned; boot_id unchanged)\n")
+			return nil
+		}
+		// Reachable with the same boot_id and never seen down: the reboot
+		// hasn't landed yet (shutdown can lag). Keep polling.
+	}
 }

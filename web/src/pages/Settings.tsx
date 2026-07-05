@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { apiDelete, apiGet, apiPatch, apiPost, canDoAdmin } from '../api';
-import type { AuditRecord, Role, User, Webhook } from '../types';
+import type { ApiToken, AuditRecord, Role, User, Webhook } from '../types';
 import { RelativeTime } from '../components/RelativeTime';
 import { useToast } from '../components/Toast';
 import { useConfirm } from '../components/ConfirmDialog';
@@ -14,6 +14,7 @@ export function Settings() {
     <div>
       <h2>Settings</h2>
       {isAdmin && <UsersSection />}
+      {isAdmin && <ApiTokensSection />}
       <WebhooksSection />
       {isAdmin && <AuditSection />}
       {!isAdmin && (
@@ -22,6 +23,135 @@ export function Settings() {
         </p>
       )}
     </div>
+  );
+}
+
+// ApiTokensSection: mint role-scoped long-lived tokens for automation.
+// The secret is shown exactly once, right after creation.
+function ApiTokensSection() {
+  const [tokens, setTokens] = useState<ApiToken[]>([]);
+  const [name, setName] = useState('');
+  const [role, setRole] = useState<Role>('operator');
+  const [freshSecret, setFreshSecret] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+  const confirm = useConfirm();
+
+  const refresh = useCallback(() => {
+    apiGet<ApiToken[]>('/api/v1/tokens').then(setTokens).catch(err =>
+      console.error('Failed to load tokens:', err),
+    );
+  }, []);
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const create = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name.trim()) return;
+    setBusy(true);
+    try {
+      const created = await apiPost<ApiToken & { secret: string }>('/api/v1/tokens', {
+        name: name.trim(),
+        role,
+      });
+      setFreshSecret(created.secret);
+      setName('');
+      refresh();
+    } catch (err) {
+      toast.show(err instanceof Error ? err.message : 'Failed to create token.', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revoke = async (t: ApiToken) => {
+    const ok = await confirm({
+      title: `Revoke token "${t.name}"?`,
+      message: 'Anything using it loses access immediately.',
+      destructive: true,
+      confirmLabel: 'Revoke',
+    });
+    if (!ok) return;
+    try {
+      await apiDelete(`/api/v1/tokens/${t.id}`);
+      toast.show('Token revoked.', 'success');
+      refresh();
+    } catch (err) {
+      toast.show(err instanceof Error ? err.message : 'Failed to revoke token.', 'error');
+    }
+  };
+
+  return (
+    <section style={{ marginBottom: '2rem' }}>
+      <h3>API tokens</h3>
+      <p style={{ opacity: 0.75, fontSize: '0.9rem' }}>
+        Long-lived tokens for scripts and CI. Send as{' '}
+        <code>Authorization: Bearer uat_…</code> — the secret is stored hashed
+        and shown only once.
+      </p>
+
+      {freshSecret && (
+        <article style={{ borderLeft: '4px solid var(--pico-color-azure-500)' }}>
+          <strong>Copy this token now — it will not be shown again.</strong>
+          <pre style={{ marginTop: '0.5rem' }}><code>{freshSecret}</code></pre>
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <button
+              type="button"
+              style={{ width: 'auto' }}
+              onClick={() => {
+                navigator.clipboard?.writeText(freshSecret);
+                toast.show('Copied.', 'success');
+              }}
+            >
+              Copy
+            </button>
+            <button type="button" className="secondary" style={{ width: 'auto' }} onClick={() => setFreshSecret(null)}>
+              Done
+            </button>
+          </div>
+        </article>
+      )}
+
+      <form onSubmit={create} style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+        <label style={{ flex: '1 1 12rem', marginBottom: 0 }}>
+          Name
+          <input value={name} onChange={e => setName(e.target.value)} placeholder="ci-deploy" required />
+        </label>
+        <label style={{ marginBottom: 0 }}>
+          Role
+          <select value={role} onChange={e => setRole(e.target.value as Role)} style={{ width: 'auto' }}>
+            <option value="viewer">viewer</option>
+            <option value="operator">operator</option>
+            <option value="admin">admin</option>
+          </select>
+        </label>
+        <button type="submit" disabled={busy} aria-busy={busy || undefined} style={{ width: 'auto' }}>
+          Create token
+        </button>
+      </form>
+
+      {tokens.length > 0 && (
+        <table>
+          <thead>
+            <tr><th>Name</th><th>Role</th><th>Created</th><th>Last used</th><th></th></tr>
+          </thead>
+          <tbody>
+            {tokens.map(t => (
+              <tr key={t.id}>
+                <td>{t.name}</td>
+                <td>{t.role}</td>
+                <td><RelativeTime time={t.created_at} /></td>
+                <td>{t.last_used_at ? <RelativeTime time={t.last_used_at} /> : 'never'}</td>
+                <td>
+                  <button type="button" className="secondary" onClick={() => revoke(t)} style={{ width: 'auto', padding: '0.2rem 0.6rem' }}>
+                    Revoke
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
   );
 }
 

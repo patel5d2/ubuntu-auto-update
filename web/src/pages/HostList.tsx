@@ -191,6 +191,28 @@ export function HostList() {
     setRolloutPlaybook(null);
   };
 
+  const handleBulkReboot = async () => {
+    const ids = Array.from(selected);
+    const ok = await confirm({
+      title: `Reboot ${ids.length} host${ids.length === 1 ? '' : 's'}?`,
+      message:
+        'Each host reboots and its run succeeds once it comes back online (up to 10 minutes each).',
+      destructive: true,
+      confirmLabel: 'Reboot',
+    });
+    if (!ok) return;
+    setBulkSubmitting(true);
+    try {
+      const result = await apiPost<BulkRunResult>('/api/v1/hosts/bulk/reboot', { host_ids: ids });
+      toast.show(`Reboot started for ${ids.length} host${ids.length === 1 ? '' : 's'}.`, 'success');
+      navigate(`/hosts/bulk/${result.group_id}`);
+    } catch (err) {
+      toast.show(err instanceof Error ? err.message : 'Failed to start reboot.', 'error');
+    } finally {
+      setBulkSubmitting(false);
+    }
+  };
+
   const handleBulkDelete = async () => {
     if (selected.size === 0) return;
     const targets = hosts.filter(h => selected.has(h.id));
@@ -329,6 +351,15 @@ export function HostList() {
           )}
           <button
             type="button"
+            className="secondary"
+            onClick={handleBulkReboot}
+            disabled={bulkSubmitting}
+            style={{ width: 'auto' }}
+          >
+            Reboot {selected.size}
+          </button>
+          <button
+            type="button"
             className="contrast"
             onClick={handleBulkDelete}
             disabled={bulkSubmitting}
@@ -434,6 +465,7 @@ export function HostList() {
           submitting={bulkSubmitting}
           onCancel={closeRollout}
           onSubmit={handleRolloutSubmit}
+          securityToggle={!rolloutPlaybook}
           {...(rolloutPlaybook && {
             title: `Run playbook "${rolloutPlaybook.name}" on ${selected.size} host${selected.size === 1 ? '' : 's'}`,
             description: (

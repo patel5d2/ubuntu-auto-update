@@ -28,6 +28,14 @@ export interface Schedule {
   created_by: string;
   created_at: string;
   playbook_id: number | null;
+  concurrency: number;
+  canary_count: number;
+  canary_wait_seconds: number;
+  abort_on_failure_pct: number;
+  window_start_minute: number | null;
+  window_end_minute: number | null;
+  window_days: number;
+  security_only: boolean;
 }
 
 export interface Overview {
@@ -40,13 +48,22 @@ export interface Overview {
   running_now: number;
 }
 
+export interface ApiToken {
+  id: number;
+  name: string;
+  role: Role;
+  created_by: string;
+  created_at: string;
+  last_used_at: string | null;
+}
+
 export interface Webhook {
   id: number;
   url: string;
   event: string;
 }
 
-export type RunKind = 'preview' | 'update' | 'playbook';
+export type RunKind = 'preview' | 'update' | 'playbook' | 'reboot';
 export type RunStatus = 'running' | 'succeeded' | 'failed' | 'cancelled';
 
 export interface Playbook {

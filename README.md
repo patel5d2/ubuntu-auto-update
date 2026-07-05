@@ -112,7 +112,11 @@ scripts/    build.sh, test.sh wrappers for all three components
 | GET    | `/api/v1/hosts/{id}/run-update` (WebSocket)       | bearer      | Stream a real `apt-get upgrade -y` |
 | GET    | `/api/v1/hosts/{id}/execute-script` (WebSocket)   | bearer      | Stream output of a user-supplied script |
 | GET    | `/api/v1/hosts/{id}/runs?limit=`                  | bearer      | Paginated update history for a host |
-| POST   | `/api/v1/hosts/bulk/run-update`                   | bearer      | Fan out an update across many hosts |
+| POST   | `/api/v1/hosts/bulk/run-update`                   | bearer      | Fan out an update across many hosts (`security_only` for unattended-upgrade) |
+| POST   | `/api/v1/hosts/bulk/run-playbook`                 | bearer      | Fan a playbook across many hosts |
+| POST   | `/api/v1/hosts/bulk/reboot`                       | bearer      | Reboot hosts and verify they come back |
+| GET/POST | `/api/v1/playbooks`                             | bearer      | Playbook library (CRUD) |
+| GET/POST | `/api/v1/tokens`                                | admin       | Long-lived API tokens (`uat_…`, secret shown once) |
 | GET    | `/api/v1/runs?group_id=`                          | bearer      | All runs in a bulk group |
 | GET    | `/api/v1/runs/{id}`                               | bearer      | Single run record + full output |
 | GET    | `/api/v1/events` (WebSocket)                      | bearer      | Multiplexed real-time channel (`{table, op, id}`) |

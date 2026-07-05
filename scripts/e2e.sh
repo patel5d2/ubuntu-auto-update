@@ -115,6 +115,27 @@ r = json.load(sys.stdin)[0]
 assert r["kind"] == "update" and r["status"] == "succeeded", "apt run: %s: %s" % (r["status"], r["error"])
 print("   apt update run OK")' || fail "apt-run assertions"
 
+echo "== security-only update (unattended-upgrade) =="
+GROUP=$(curl -sf -X POST "$API/hosts/bulk/run-update" -H "$AUTH" -H 'Content-Type: application/json' \
+    -d "{\"host_ids\":[$HID],\"security_only\":true}" | jsonget '["group_id"]')
+wait_run "$GROUP" 150 | python3 -c '
+import sys, json
+r = json.load(sys.stdin)[0]
+assert r["status"] == "succeeded", "security run: %s: %s" % (r["status"], r["error"])
+assert "security-only update" in r["output"], "security banner missing"
+print("   security-only update OK")' || fail "security-only assertions"
+
+echo "== API token (PAT) auth =="
+SECRET=$(curl -sf -X POST "$API/tokens" -H "$AUTH" -H 'Content-Type: application/json' \
+    -d '{"name":"e2e-ci","role":"viewer"}' | jsonget '["secret"]')
+case "$SECRET" in uat_*) ;; *) fail "token secret missing uat_ prefix: $SECRET";; esac
+curl -sf "$API/hosts" -H "Authorization: Bearer $SECRET" >/dev/null || fail "PAT rejected on viewer endpoint"
+TOK_ID=$(curl -sf "$API/tokens" -H "$AUTH" | jsonget '[0]["id"]')
+curl -sf -X DELETE "$API/tokens/$TOK_ID" -H "$AUTH" || fail "token revoke failed"
+STATUS=$(curl -s -o /dev/null -w '%{http_code}' "$API/hosts" -H "Authorization: Bearer $SECRET")
+[ "$STATUS" = "401" ] || fail "revoked PAT still accepted (HTTP $STATUS)"
+echo "   PAT mint/use/revoke OK"
+
 echo "== playbook_failure webhook dispatch =="
 curl -sf -X POST "$API/webhooks" -H "$AUTH" -H 'Content-Type: application/json' \
     -d '{"url":"http://e2e-sink.invalid/hook","event":"playbook_failure"}' >/dev/null

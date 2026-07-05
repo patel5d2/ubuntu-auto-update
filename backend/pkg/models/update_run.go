@@ -15,6 +15,7 @@ const (
 	RunKindPreview  RunKind = "preview"
 	RunKindUpdate   RunKind = "update"
 	RunKindPlaybook RunKind = "playbook"
+	RunKindReboot   RunKind = "reboot"
 )
 
 // RunStatus tracks lifecycle. CHECK constraint in the schema enforces the

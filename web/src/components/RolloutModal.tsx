@@ -5,6 +5,7 @@ export interface RolloutOptions {
   canary_count: number;
   canary_wait_seconds: number;
   abort_on_failure_pct: number;
+  security_only?: boolean;
 }
 
 // RolloutModal surfaces the staged-rollout knobs the backend has always
@@ -17,6 +18,7 @@ export function RolloutModal({
   title,
   description,
   submitLabel = 'Run update',
+  securityToggle = false,
 }: {
   hostCount: number;
   submitting: boolean;
@@ -27,8 +29,11 @@ export function RolloutModal({
   title?: string;
   description?: React.ReactNode;
   submitLabel?: string;
+  // Update flow only: offer the security-updates-only switch.
+  securityToggle?: boolean;
 }) {
   const [concurrency, setConcurrency] = useState(5);
+  const [securityOnly, setSecurityOnly] = useState(false);
   const [canaryCount, setCanaryCount] = useState(0);
   const [canaryWait, setCanaryWait] = useState(120);
   const [abortPct, setAbortPct] = useState(50);
@@ -53,6 +58,12 @@ export function RolloutModal({
           )}
         </p>
 
+        {securityToggle && (
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.75rem' }}>
+            <input type="checkbox" role="switch" checked={securityOnly} onChange={e => setSecurityOnly(e.target.checked)} />
+            Security updates only (<code>unattended-upgrade</code>)
+          </label>
+        )}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
           <label>
             Concurrency
@@ -116,6 +127,7 @@ export function RolloutModal({
                 canary_count: canary,
                 canary_wait_seconds: canary > 0 ? canaryWait : 0,
                 abort_on_failure_pct: canary > 0 ? abortPct : 0,
+                ...(securityToggle && securityOnly && { security_only: true }),
               })
             }
             style={{ width: 'auto' }}
