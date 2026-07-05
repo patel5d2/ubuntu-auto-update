@@ -1,80 +1,61 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# test-container.sh — smoke-test the production compose stack (docker-compose.yml).
+#
+# The stack is two services: `postgres` and `app` (the single "dark container"
+# that serves both the React UI and the Go API on :8080). Run it after
+# ./quickstart.sh to confirm everything actually works.
 
-echo "🚀 Ubuntu Auto-Update Container Test Script"
-echo "==========================================="
+set -uo pipefail
 
-# Check if containers are running
-echo "📦 Checking container status..."
-docker-compose ps
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$REPO_ROOT"
 
-echo -e "\n🔍 Testing services..."
-
-# Test frontend
-echo "• Frontend (http://localhost:3000):"
-FRONTEND_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000)
-if [ "$FRONTEND_STATUS" = "200" ]; then
-    echo "  ✅ Frontend is accessible"
+if docker compose version >/dev/null 2>&1; then
+    COMPOSE="docker compose"
+elif command -v docker-compose >/dev/null 2>&1; then
+    COMPOSE="docker-compose"
 else
-    echo "  ❌ Frontend not accessible (HTTP $FRONTEND_STATUS)"
+    echo "❌ Neither 'docker compose' nor 'docker-compose' found." >&2
+    exit 1
 fi
 
-# Test backend API
-echo "• Backend API (http://localhost:8082):"
-BACKEND_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8082/api/v1/hosts)
-if [ "$BACKEND_STATUS" = "401" ] || [ "$BACKEND_STATUS" = "200" ]; then
-    echo "  ✅ Backend API is responding"
-else
-    echo "  ❌ Backend API not responding (HTTP $BACKEND_STATUS)"
+FAILURES=0
+check() { # check <label> <command...>
+    local label=$1; shift
+    if "$@" >/dev/null 2>&1; then
+        echo "  ✅ $label"
+    else
+        echo "  ❌ $label"
+        FAILURES=$((FAILURES + 1))
+    fi
+}
+
+echo "📦 Container status:"
+$COMPOSE ps
+
+echo
+echo "🔍 Testing services..."
+check "API health   (http://localhost:8080/api/v1/health)" \
+    curl -sf http://localhost:8080/api/v1/health
+check "Web UI       (http://localhost:8080/)" \
+    curl -sf -o /dev/null http://localhost:8080/
+check "PostgreSQL   (pg_isready inside the postgres container)" \
+    $COMPOSE exec -T postgres pg_isready
+
+if [ "$FAILURES" -gt 0 ]; then
+    echo
+    echo "📝 Recent app logs (troubleshooting):"
+    $COMPOSE logs --tail=20 app 2>/dev/null | sed 's/^/  /'
+    echo
+    echo "❌ $FAILURES check(s) failed. Common fixes:"
+    echo "  • Stack not up yet?         ./quickstart.sh   (first boot needs ~10s)"
+    echo "  • Missing .env?             ./quickstart.sh generates it"
+    echo "  • Migrations failed?        $COMPOSE logs app | grep migrate"
+    exit 1
 fi
 
-# Test database connection
-echo "• PostgreSQL Database:"
-DB_STATUS=$(docker-compose exec -T postgres pg_isready -U user -d uau_db 2>/dev/null)
-if echo "$DB_STATUS" | grep -q "accepting connections"; then
-    echo "  ✅ Database is accessible"
-else
-    echo "  ❌ Database not accessible"
-fi
-
-# Test Redis
-echo "• Redis Cache:"
-REDIS_STATUS=$(docker-compose exec -T redis redis-cli ping 2>/dev/null)
-if [ "$REDIS_STATUS" = "PONG" ]; then
-    echo "  ✅ Redis is accessible"
-else
-    echo "  ❌ Redis not accessible"
-fi
-
-echo -e "\n📊 Container Resource Usage:"
-docker stats --no-stream --format "table {{.Container}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}" $(docker-compose ps -q)
-
-echo -e "\n🌐 Application URLs:"
-echo "  • Frontend: http://localhost:3000"
-echo "  • Backend API: http://localhost:8082"
-echo "  • PostgreSQL: localhost:5432"
-echo "  • Redis: localhost:6379"
-
-echo -e "\n📝 Container Logs (last 5 lines each):"
-echo "Frontend:"
-docker-compose logs --tail=5 frontend 2>/dev/null | sed 's/^/  /'
-
-echo "Backend:"
-docker-compose logs --tail=5 backend 2>/dev/null | sed 's/^/  /'
-
-echo -e "\n🎯 Next Steps:"
-echo "  1. Open http://localhost:3000 in your browser"
-echo "  2. Use admin/password to login (configured in docker-compose.yml)"
-echo "  3. Explore the advanced dashboard with:"
-echo "     • Real-time system monitoring"
-echo "     • Host management"
-echo "     • Update scheduling"
-echo "     • Service management"
-echo "  4. To stop: docker-compose down"
-echo "  5. To view logs: docker-compose logs -f [service]"
-
-echo -e "\n✨ Advanced Features Available:"
-echo "  • Modern React dashboard with dark/light themes"
-echo "  • Advanced UI components (modals, alerts, cards)"
-echo "  • Real-time WebSocket updates"
-echo "  • Responsive design for desktop and mobile"
-echo "  • Enterprise-grade monitoring and analytics"
+echo
+echo "✨ All checks passed."
+echo "  • Web UI + API: http://localhost:8080  (login with credentials from .env)"
+echo "  • Tail logs:    ./quickstart.sh logs"
+echo "  • Tear down:    ./quickstart.sh down"

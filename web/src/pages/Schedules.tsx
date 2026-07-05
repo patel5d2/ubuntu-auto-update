@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { apiDelete, apiGet, apiPatch, apiPost } from '../api';
-import type { Host, Schedule } from '../types';
+import type { Host, Playbook, Schedule } from '../types';
 import { RelativeTime } from '../components/RelativeTime';
 import { useToast } from '../components/Toast';
 import { useConfirm } from '../components/ConfirmDialog';
@@ -10,6 +10,7 @@ import { useConfirm } from '../components/ConfirmDialog';
 export function Schedules() {
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [hosts, setHosts] = useState<Host[]>([]);
+  const [playbooks, setPlaybooks] = useState<Playbook[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
 
@@ -17,6 +18,7 @@ export function Schedules() {
   const [name, setName] = useState('');
   const [intervalHours, setIntervalHours] = useState(24);
   const [startAt, setStartAt] = useState(''); // datetime-local value
+  const [playbookId, setPlaybookId] = useState<number | ''>(''); // '' = apt upgrade
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [submitting, setSubmitting] = useState(false);
 
@@ -24,10 +26,15 @@ export function Schedules() {
   const confirm = useConfirm();
 
   const refresh = useCallback(() => {
-    return Promise.all([apiGet<Schedule[]>('/api/v1/schedules'), apiGet<Host[]>('/api/v1/hosts')])
-      .then(([s, h]) => {
+    return Promise.all([
+      apiGet<Schedule[]>('/api/v1/schedules'),
+      apiGet<Host[]>('/api/v1/hosts'),
+      apiGet<Playbook[]>('/api/v1/playbooks'),
+    ])
+      .then(([s, h, p]) => {
         setSchedules(s);
         setHosts(h);
+        setPlaybooks(p);
       })
       .catch(err => console.error('Failed to load schedules:', err));
   }, []);
@@ -59,11 +66,13 @@ export function Schedules() {
         interval_minutes: Math.round(intervalHours * 60),
       };
       if (startAt) body.start_at = new Date(startAt).toISOString();
+      if (playbookId !== '') body.playbook_id = playbookId;
       await apiPost<Schedule>('/api/v1/schedules', body);
       toast.show('Schedule created.', 'success');
       setName('');
       setSelected(new Set());
       setStartAt('');
+      setPlaybookId('');
       setCreating(false);
       refresh();
     } catch (err) {
@@ -141,6 +150,18 @@ export function Schedules() {
                 First run (optional)
                 <input type="datetime-local" value={startAt} onChange={e => setStartAt(e.target.value)} />
               </label>
+              <label>
+                Runs
+                <select
+                  value={playbookId}
+                  onChange={e => setPlaybookId(e.target.value === '' ? '' : Number(e.target.value))}
+                >
+                  <option value="">apt upgrade (default)</option>
+                  {playbooks.map(pb => (
+                    <option key={pb.id} value={pb.id}>{pb.name}</option>
+                  ))}
+                </select>
+              </label>
             </div>
 
             <fieldset>
@@ -174,6 +195,7 @@ export function Schedules() {
             <tr>
               <th>Name</th>
               <th>Hosts</th>
+              <th>Runs</th>
               <th>Every</th>
               <th>Next run</th>
               <th>Enabled</th>
@@ -185,6 +207,11 @@ export function Schedules() {
               <tr key={s.id} style={s.enabled ? undefined : { opacity: 0.55 }}>
                 <td>{s.name}</td>
                 <td title={s.host_ids.map(hostName).join(', ')}>{s.host_ids.length}</td>
+                <td>
+                  {s.playbook_id != null
+                    ? playbooks.find(p => p.id === s.playbook_id)?.name ?? `playbook #${s.playbook_id}`
+                    : 'apt upgrade'}
+                </td>
                 <td>{formatInterval(s.interval_minutes)}</td>
                 <td>{s.enabled ? <RelativeTime time={s.next_run_at} /> : '—'}</td>
                 <td>

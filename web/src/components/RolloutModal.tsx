@@ -14,11 +14,19 @@ export function RolloutModal({
   submitting,
   onCancel,
   onSubmit,
+  title,
+  description,
+  submitLabel = 'Run update',
 }: {
   hostCount: number;
   submitting: boolean;
   onCancel: () => void;
   onSubmit: (opts: RolloutOptions) => void;
+  // Copy overrides so the playbook flow can reuse the same modal; the update
+  // flow omits them and renders exactly as before.
+  title?: string;
+  description?: React.ReactNode;
+  submitLabel?: string;
 }) {
   const [concurrency, setConcurrency] = useState(5);
   const [canaryCount, setCanaryCount] = useState(0);
@@ -32,13 +40,17 @@ export function RolloutModal({
       <article style={{ maxWidth: '32rem' }}>
         <header>
           <strong>
-            Run update on {hostCount} host{hostCount === 1 ? '' : 's'}
+            {title ?? `Run update on ${hostCount} host${hostCount === 1 ? '' : 's'}`}
           </strong>
         </header>
 
         <p style={{ marginBottom: '1rem' }}>
-          Each host gets a real <code>apt-get upgrade</code>. Optionally stage the rollout: update a
-          canary wave first, wait, then continue only if the canaries succeed.
+          {description ?? (
+            <>
+              Each host gets a real <code>apt-get upgrade</code>. Optionally stage the rollout: update a
+              canary wave first, wait, then continue only if the canaries succeed.
+            </>
+          )}
         </p>
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
@@ -108,7 +120,7 @@ export function RolloutModal({
             }
             style={{ width: 'auto' }}
           >
-            {canary > 0 ? `Start canary rollout (${canary} first)` : 'Run update'}
+            {canary > 0 ? `Start canary rollout (${canary} first)` : submitLabel}
           </button>
         </footer>
       </article>

@@ -34,7 +34,7 @@ cd ubuntu-auto-update
 
 ./quickstart.sh                  # generates .env with random secrets, brings up the stack
 
-# Web UI:  http://localhost:5173
+# Web UI:  http://localhost:8080
 # API:     http://localhost:8080/api/v1/health
 ```
 

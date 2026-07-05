@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { apiDelete, apiGet, apiPost } from '../api';
-import type { BulkRunResult, Host } from '../types';
+import type { BulkRunResult, Host, Playbook } from '../types';
 import { AddHostModal } from '../components/AddHostModal';
 import { StatusBadge, type HostStatus } from '../components/StatusBadge';
 import { RelativeTime } from '../components/RelativeTime';
@@ -37,6 +37,11 @@ export function HostList() {
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulkSubmitting, setBulkSubmitting] = useState(false);
   const [rolloutOpen, setRolloutOpen] = useState(false);
+  // Playbook picked in the bulk bar; the rollout modal runs it instead of
+  // apt-get upgrade when non-null.
+  const [playbooks, setPlaybooks] = useState<Playbook[]>([]);
+  const [selectedPlaybook, setSelectedPlaybook] = useState<number | ''>('');
+  const [rolloutPlaybook, setRolloutPlaybook] = useState<Playbook | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const toast = useToast();
@@ -56,6 +61,7 @@ export function HostList() {
 
   useEffect(() => {
     refresh().finally(() => setLoading(false));
+    apiGet<Playbook[]>('/api/v1/playbooks').then(setPlaybooks).catch(() => {});
   }, [refresh]);
 
   // Live update: any host change (agent report, manual edit, bulk update
@@ -151,20 +157,35 @@ export function HostList() {
 
   const handleRolloutSubmit = async (opts: RolloutOptions) => {
     const ids = Array.from(selected);
+    const pb = rolloutPlaybook;
     setBulkSubmitting(true);
     try {
-      const result = await apiPost<BulkRunResult>('/api/v1/hosts/bulk/run-update', {
-        host_ids: ids,
-        ...opts,
-      });
-      toast.show(`Bulk update started for ${ids.length} host${ids.length === 1 ? '' : 's'}.`, 'success');
-      setRolloutOpen(false);
+      const result = pb
+        ? await apiPost<BulkRunResult>('/api/v1/hosts/bulk/run-playbook', {
+            host_ids: ids,
+            playbook_id: pb.id,
+            ...opts,
+          })
+        : await apiPost<BulkRunResult>('/api/v1/hosts/bulk/run-update', {
+            host_ids: ids,
+            ...opts,
+          });
+      toast.show(
+        `Bulk ${pb ? `playbook "${pb.name}"` : 'update'} started for ${ids.length} host${ids.length === 1 ? '' : 's'}.`,
+        'success',
+      );
+      closeRollout();
       navigate(`/hosts/bulk/${result.group_id}`);
     } catch (err) {
-      toast.show(err instanceof Error ? err.message : 'Failed to start bulk update.', 'error');
+      toast.show(err instanceof Error ? err.message : 'Failed to start bulk run.', 'error');
     } finally {
       setBulkSubmitting(false);
     }
+  };
+
+  const closeRollout = () => {
+    setRolloutOpen(false);
+    setRolloutPlaybook(null);
   };
 
   const handleBulkDelete = async () => {
@@ -274,6 +295,35 @@ export function HostList() {
           >
             {bulkSubmitting ? 'Starting…' : `Update ${selected.size}`}
           </button>
+          {playbooks.length > 0 && (
+            <>
+              <select
+                value={selectedPlaybook}
+                onChange={e => setSelectedPlaybook(e.target.value === '' ? '' : Number(e.target.value))}
+                aria-label="Playbook"
+                style={{ width: 'auto', marginBottom: 0 }}
+              >
+                <option value="">Playbook…</option>
+                {playbooks.map(pb => (
+                  <option key={pb.id} value={pb.id}>{pb.name}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => {
+                  const pb = playbooks.find(p => p.id === selectedPlaybook);
+                  if (!pb) return;
+                  setRolloutPlaybook(pb);
+                  setRolloutOpen(true);
+                }}
+                disabled={bulkSubmitting || selectedPlaybook === ''}
+                style={{ width: 'auto' }}
+              >
+                Run playbook
+              </button>
+            </>
+          )}
           <button
             type="button"
             className="contrast"
@@ -379,8 +429,19 @@ export function HostList() {
         <RolloutModal
           hostCount={selected.size}
           submitting={bulkSubmitting}
-          onCancel={() => setRolloutOpen(false)}
+          onCancel={closeRollout}
           onSubmit={handleRolloutSubmit}
+          {...(rolloutPlaybook && {
+            title: `Run playbook "${rolloutPlaybook.name}" on ${selected.size} host${selected.size === 1 ? '' : 's'}`,
+            description: (
+              <>
+                Each host runs the playbook's {rolloutPlaybook.steps.length} step
+                {rolloutPlaybook.steps.length === 1 ? '' : 's'} over SSH, stopping at the first
+                failure. Optionally stage the rollout with a canary wave.
+              </>
+            ),
+            submitLabel: 'Run playbook',
+          })}
         />
       )}
     </div>

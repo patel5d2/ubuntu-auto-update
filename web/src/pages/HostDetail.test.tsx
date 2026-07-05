@@ -32,6 +32,7 @@ const RUNS: UpdateRun[] = [
     finished_at: '2026-04-28T11:00:30Z',
     output: 'all good',
     error: null,
+    playbook_id: null,
   },
   {
     id: 102,
@@ -45,6 +46,7 @@ const RUNS: UpdateRun[] = [
     finished_at: '2026-04-28T10:00:05Z',
     output: 'oops',
     error: 'apt died',
+    playbook_id: null,
   },
 ];
 
@@ -71,6 +73,7 @@ describe('HostDetail', () => {
     const apiGet = vi.spyOn(api, 'apiGet').mockImplementation(async (url: string) => {
       if (url === '/api/v1/hosts/7') return HOST as unknown as never;
       if (url.startsWith('/api/v1/hosts/7/runs')) return RUNS as unknown as never;
+      if (url === '/api/v1/playbooks') return [] as unknown as never;
       throw new Error(`unexpected GET ${url}`);
     });
 
@@ -89,6 +92,7 @@ describe('HostDetail', () => {
     vi.spyOn(api, 'apiGet').mockImplementation(async (url: string) => {
       if (url === '/api/v1/hosts/7') return HOST as unknown as never;
       if (url.startsWith('/api/v1/hosts/7/runs')) return RUNS as unknown as never;
+      if (url === '/api/v1/playbooks') return [] as unknown as never;
       throw new Error(`unexpected GET ${url}`);
     });
 
@@ -113,6 +117,7 @@ describe('HostDetail', () => {
     vi.spyOn(api, 'apiGet').mockImplementation(async (url: string) => {
       if (url === '/api/v1/hosts/7') return HOST as unknown as never;
       if (url.startsWith('/api/v1/hosts/7/runs')) return [] as unknown as never;
+      if (url === '/api/v1/playbooks') return [] as unknown as never;
       throw new Error(`unexpected GET ${url}`);
     });
 
@@ -129,6 +134,7 @@ describe('HostDetail', () => {
     vi.spyOn(api, 'apiGet').mockImplementation(async (url: string) => {
       if (url === '/api/v1/hosts/7') return HOST as unknown as never;
       if (url.startsWith('/api/v1/hosts/7/runs')) return [] as unknown as never;
+      if (url === '/api/v1/playbooks') return [] as unknown as never;
       throw new Error(`unexpected GET ${url}`);
     });
 

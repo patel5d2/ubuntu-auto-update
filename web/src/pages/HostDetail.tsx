@@ -93,6 +93,21 @@ export function HostDetail() {
 
   const handlePreview = () => startStream('preview');
 
+  const handleRunPlaybook = async () => {
+    if (!host || selectedPlaybook === '') return;
+    const pb = playbooks.find(p => p.id === selectedPlaybook);
+    if (!pb) return;
+    const ok = await confirm({
+      title: `Run playbook "${pb.name}" on ${host.hostname}?`,
+      message: `${pb.steps.length} step${pb.steps.length === 1 ? '' : 's'} run sequentially over SSH and stop at the first failure. Output streams here and is kept in update history.`,
+      destructive: true,
+      confirmLabel: 'Run playbook',
+      cancelLabel: 'Cancel',
+    });
+    if (!ok) return;
+    startStream('playbook', pb.id);
+  };
+
   const handleRunUpdate = async () => {
     if (!host) return;
     const ok = await confirm({
@@ -254,6 +269,31 @@ export function HostDetail() {
             >
               {liveKind === 'preview' ? 'Previewing…' : 'Preview Updates'}
             </button>
+            {isOperator && playbooks.length > 0 && (
+              <span style={{ display: 'flex', gap: '0.5rem' }}>
+                <select
+                  value={selectedPlaybook}
+                  onChange={e => setSelectedPlaybook(e.target.value === '' ? '' : Number(e.target.value))}
+                  aria-label="Playbook"
+                  style={{ width: 'auto', marginBottom: 0 }}
+                >
+                  <option value="">Playbook…</option>
+                  {playbooks.map(pb => (
+                    <option key={pb.id} value={pb.id}>{pb.name}</option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={handleRunPlaybook}
+                  disabled={isStreaming || selectedPlaybook === ''}
+                  aria-busy={liveKind === 'playbook' || undefined}
+                  style={{ width: 'auto' }}
+                >
+                  {liveKind === 'playbook' ? 'Running…' : 'Run Playbook'}
+                </button>
+              </span>
+            )}
             <Link to={`/hosts/${hostId}/execute-script`}>
               <button type="button" className="secondary" disabled={isStreaming} style={{ width: 'auto' }}>
                 Execute Script
@@ -405,7 +445,7 @@ export function HostDetail() {
       {lastKind !== null && (
         <article style={{ marginTop: '1.5rem', borderLeft: '4px solid var(--pico-color-azure-500)' }}>
           <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <strong>{lastKind === 'update' ? 'Update output' : 'Preview output'}</strong>
+            <strong>{lastKind === 'update' ? 'Update output' : lastKind === 'playbook' ? 'Playbook output' : 'Preview output'}</strong>
             {isStreaming ? (
               <span aria-busy="true">streaming…</span>
             ) : (

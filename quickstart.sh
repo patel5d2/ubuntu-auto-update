@@ -90,7 +90,7 @@ cmd_up() {
     cmd_status
     cat <<EOF
 
-  Web UI:  http://localhost:5173
+  Web UI:  http://localhost:8080
   API:     http://localhost:8080/api/v1/health
 
   Login with the credentials in $ENV_FILE.
