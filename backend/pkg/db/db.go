@@ -27,7 +27,7 @@ type DBTX interface {
 	Ping(ctx context.Context) error
 }
 
-const hostColumns = `id, hostname, ssh_user, created_at, updated_at, last_seen, update_output, upgrade_output, error, tags, reboot_required, packages_updated, packages_available, os_version, kernel_version, agent_version`
+const hostColumns = `id, hostname, ssh_user, created_at, updated_at, last_seen, update_output, upgrade_output, error, tags, reboot_required, packages_updated, packages_available, os_version, kernel_version, agent_version, offline_since`
 
 func NewConnection(ctx context.Context) (*pgxpool.Pool, error) {
 	dbUrl := os.Getenv("DATABASE_URL")
@@ -103,6 +103,28 @@ func ListHosts(ctx context.Context, db DBTX) ([]models.Host, error) {
 		hosts = []models.Host{} // avoid `null` in JSON
 	}
 	return hosts, nil
+}
+
+// SweepOfflineHosts is the server-side offline detector. It first clears the
+// flag for hosts that have reported again, then flags hosts whose last_seen
+// crossed the threshold, returning only the newly-flagged rows so the caller
+// dispatches host_offline exactly once per transition.
+func SweepOfflineHosts(ctx context.Context, db DBTX, thresholdMinutes int) ([]models.Host, error) {
+	if _, err := db.Exec(ctx, `
+		UPDATE hosts SET offline_since = NULL
+		WHERE offline_since IS NOT NULL AND last_seen >= NOW() - make_interval(mins => $1)`,
+		thresholdMinutes); err != nil {
+		return nil, err
+	}
+	rows, err := db.Query(ctx, `
+		UPDATE hosts SET offline_since = NOW()
+		WHERE offline_since IS NULL AND last_seen < NOW() - make_interval(mins => $1)
+		RETURNING `+hostColumns,
+		thresholdMinutes)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowToStructByName[models.Host])
 }
 
 // CreateHost inserts a new host record. Returns ErrDuplicateHostname if a

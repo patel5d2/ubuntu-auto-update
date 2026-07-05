@@ -26,6 +26,10 @@ type Host struct {
 	OsVersion         string `json:"os_version" db:"os_version"`
 	KernelVersion     string `json:"kernel_version" db:"kernel_version"`
 	AgentVersion      string `json:"agent_version" db:"agent_version"`
+
+	// OfflineSince is set by the server-side offline sweep when last_seen
+	// crosses the threshold; nil = online (or not yet evaluated).
+	OfflineSince *time.Time `json:"offline_since" db:"offline_since"`
 }
 
 // MarshalJSON renders Error as a plain string-or-null instead of the default

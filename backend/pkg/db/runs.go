@@ -152,3 +152,17 @@ func GetRun(ctx context.Context, db DBTX, id int32) (models.UpdateRun, error) {
 	}
 	return pgx.CollectExactlyOneRow(rows, pgx.RowToStructByName[models.UpdateRun])
 }
+
+// PruneRuns deletes terminal runs older than retentionDays (running rows are
+// never touched). Returns the number of rows removed. Walks
+// idx_update_runs_started_at from migration 000018.
+func PruneRuns(ctx context.Context, db DBTX, retentionDays int) (int64, error) {
+	tag, err := db.Exec(ctx, `
+		DELETE FROM update_runs
+		WHERE started_at < NOW() - make_interval(days => $1) AND status <> 'running'`,
+		retentionDays)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}

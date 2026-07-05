@@ -72,7 +72,10 @@ See [`DEVELOPMENT.md`](DEVELOPMENT.md) for the full development workflow.
 Every tunable is an environment variable. See [`.env.example`](.env.example)
 for the complete contract; the most important ones are `DATABASE_URL`,
 `ADMIN_USERNAME` / `ADMIN_PASSWORD`, `ENROLLMENT_TOKEN`, and
-`ENCRYPTION_KEY_FILE`.
+`ENCRYPTION_KEY_FILE`. Operational tuning: `RUN_RETENTION_DAYS` (prune run
+history older than N days; default 90, `0` disables) and
+`OFFLINE_AFTER_MINUTES` (mark hosts offline and fire the `host_offline`
+webhook after N minutes without a report; default 15).
 
 The backend will also pick up keys from `backend/config.conf` (via Viper)
 and dump them into the process environment at startup; the process env

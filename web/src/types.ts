@@ -15,6 +15,7 @@ export interface Host {
   os_version: string;
   kernel_version: string;
   agent_version: string;
+  offline_since: string | null;
 }
 
 export interface Schedule {

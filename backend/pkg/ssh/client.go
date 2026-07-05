@@ -18,6 +18,12 @@ import (
 
 const dialTimeout = 30 * time.Second
 
+// keepaliveInterval paces protocol-level pings on long-lived run connections.
+// Without them a half-open TCP connection (host rebooted mid-run, NAT expiry)
+// leaves session reads blocked forever; a failed ping closes the client so
+// everything blocked on it unwinds with an error instead.
+const keepaliveInterval = 30 * time.Second
+
 // sudoProbeCmd checks passwordless sudo with a command every sudo scope
 // grants ("apt" and "full" both allow apt-get). `sudo -n true` is wrong
 // here: under the apt scope, true isn't in the NOPASSWD list, so the probe
@@ -197,5 +203,39 @@ func (d *Dialer) ConnectToHost(ctx context.Context, hostID int32) (*ssh.Client, 
 	if err != nil {
 		return nil, host, fmt.Errorf("dial ssh: %w", err)
 	}
+	startKeepalive(client)
 	return client, host, nil
+}
+
+// startKeepalive pings the server every keepaliveInterval. On ping failure —
+// including after the caller has closed the client — it closes the client and
+// exits, so the goroutine never outlives the connection by more than one tick.
+func startKeepalive(client *ssh.Client) {
+	go func() {
+		ticker := time.NewTicker(keepaliveInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			if _, _, err := client.SendRequest("keepalive@openssh.com", true, nil); err != nil {
+				client.Close()
+				return
+			}
+		}
+	}()
+}
+
+// WaitWithAbort runs wait() in a goroutine and returns its error, unless ctx
+// expires first — then it calls abort (which must unblock wait, e.g. by
+// closing the session/client), waits for wait to return, and reports
+// timedOut=true. Both run engines use this so a hung remote command turns
+// into a failed run instead of a leaked goroutine.
+func WaitWithAbort(ctx context.Context, wait func() error, abort func()) (err error, timedOut bool) {
+	done := make(chan error, 1)
+	go func() { done <- wait() }()
+	select {
+	case err = <-done:
+		return err, false
+	case <-ctx.Done():
+		abort()
+		return <-done, true
+	}
 }

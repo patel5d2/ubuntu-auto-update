@@ -23,8 +23,8 @@ func TestHandleListHosts(t *testing.T) {
 	defer mock.Close()
 
 	now := time.Now()
-	rows := mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error", "tags", "reboot_required", "packages_updated", "packages_available", "os_version", "kernel_version", "agent_version"}).
-		AddRow(int32(1), "test-host", "root", now, now, now, "", "", nil, []string{}, false, 0, 0, "", "", "")
+	rows := mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error", "tags", "reboot_required", "packages_updated", "packages_available", "os_version", "kernel_version", "agent_version", "offline_since"}).
+		AddRow(int32(1), "test-host", "root", now, now, now, "", "", nil, []string{}, false, 0, 0, "", "", "", nil)
 
 	mock.ExpectQuery(`SELECT (.+) FROM hosts ORDER BY hostname`).
 		WillReturnRows(rows)
@@ -54,8 +54,8 @@ func TestHandleGetHost(t *testing.T) {
 	defer mock.Close()
 
 	now := time.Now()
-	rows := mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error", "tags", "reboot_required", "packages_updated", "packages_available", "os_version", "kernel_version", "agent_version"}).
-		AddRow(int32(1), "test-host", "root", now, now, now, "", "", nil, []string{}, false, 0, 0, "", "", "")
+	rows := mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error", "tags", "reboot_required", "packages_updated", "packages_available", "os_version", "kernel_version", "agent_version", "offline_since"}).
+		AddRow(int32(1), "test-host", "root", now, now, now, "", "", nil, []string{}, false, 0, 0, "", "", "", nil)
 
 	mock.ExpectQuery(`SELECT (.+) FROM hosts WHERE id = \$1`).
 		WithArgs(int32(1)).
@@ -117,8 +117,8 @@ func TestHandleCreateHost_NoEnroll(t *testing.T) {
 	})
 
 	now := time.Now()
-	rows := mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error", "tags", "reboot_required", "packages_updated", "packages_available", "os_version", "kernel_version", "agent_version"}).
-		AddRow(int32(1), "new-host", "root", now, now, now, "", "", nil, []string{}, false, 0, 0, "", "", "")
+	rows := mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error", "tags", "reboot_required", "packages_updated", "packages_available", "os_version", "kernel_version", "agent_version", "offline_since"}).
+		AddRow(int32(1), "new-host", "root", now, now, now, "", "", nil, []string{}, false, 0, 0, "", "", "", nil)
 
 	mock.ExpectQuery(`INSERT INTO hosts`).
 		WithArgs("new-host", "root").
@@ -173,8 +173,8 @@ func TestHandleUpdateHost(t *testing.T) {
 	})
 
 	now := time.Now()
-	rows := mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error", "tags", "reboot_required", "packages_updated", "packages_available", "os_version", "kernel_version", "agent_version"}).
-		AddRow(int32(1), "test-host", "ubuntu", now, now, now, "", "", nil, []string{}, false, 0, 0, "", "", "")
+	rows := mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error", "tags", "reboot_required", "packages_updated", "packages_available", "os_version", "kernel_version", "agent_version", "offline_since"}).
+		AddRow(int32(1), "test-host", "ubuntu", now, now, now, "", "", nil, []string{}, false, 0, 0, "", "", "", nil)
 
 	mock.ExpectQuery(`UPDATE hosts SET ssh_user = \$2 WHERE id = \$1`).
 		WithArgs(int32(1), "ubuntu").
@@ -259,8 +259,8 @@ func TestHandleDeleteHost(t *testing.T) {
 
 	now := time.Now()
 	// Success path
-	rows := mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error", "tags", "reboot_required", "packages_updated", "packages_available", "os_version", "kernel_version", "agent_version"}).
-		AddRow(int32(1), "test-host", "root", now, now, now, "", "", nil, []string{}, false, 0, 0, "", "", "")
+	rows := mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error", "tags", "reboot_required", "packages_updated", "packages_available", "os_version", "kernel_version", "agent_version", "offline_since"}).
+		AddRow(int32(1), "test-host", "root", now, now, now, "", "", nil, []string{}, false, 0, 0, "", "", "", nil)
 	mock.ExpectQuery(`SELECT (.+) FROM hosts WHERE id = \$1`).WithArgs(int32(1)).WillReturnRows(rows)
 
 	mock.ExpectExec(`DELETE FROM hosts WHERE id = \$1`).WithArgs(int32(1)).WillReturnResult(pgxmock.NewResult("DELETE", 1))
@@ -278,8 +278,8 @@ func TestHandleDeleteHost(t *testing.T) {
 	}
 
 	// Mismatched hostname
-	rows2 := mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error", "tags", "reboot_required", "packages_updated", "packages_available", "os_version", "kernel_version", "agent_version"}).
-		AddRow(int32(2), "test-host-2", "root", now, now, now, "", "", nil, []string{}, false, 0, 0, "", "", "")
+	rows2 := mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error", "tags", "reboot_required", "packages_updated", "packages_available", "os_version", "kernel_version", "agent_version", "offline_since"}).
+		AddRow(int32(2), "test-host-2", "root", now, now, now, "", "", nil, []string{}, false, 0, 0, "", "", "", nil)
 	mock.ExpectQuery(`SELECT (.+) FROM hosts WHERE id = \$1`).WithArgs(int32(2)).WillReturnRows(rows2)
 
 	req = httptest.NewRequest(http.MethodDelete, "/api/v1/hosts/2", nil)
@@ -305,8 +305,8 @@ func TestHandleDeleteHost(t *testing.T) {
 	}
 
 	// DB Error on DeleteHost
-	rows4 := mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error", "tags", "reboot_required", "packages_updated", "packages_available", "os_version", "kernel_version", "agent_version"}).
-		AddRow(int32(4), "test-host-4", "root", now, now, now, "", "", nil, []string{}, false, 0, 0, "", "", "")
+	rows4 := mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error", "tags", "reboot_required", "packages_updated", "packages_available", "os_version", "kernel_version", "agent_version", "offline_since"}).
+		AddRow(int32(4), "test-host-4", "root", now, now, now, "", "", nil, []string{}, false, 0, 0, "", "", "", nil)
 	mock.ExpectQuery(`SELECT (.+) FROM hosts WHERE id = \$1`).WithArgs(int32(4)).WillReturnRows(rows4)
 
 	mock.ExpectExec(`DELETE FROM hosts WHERE id = \$1`).WithArgs(int32(4)).WillReturnError(sql.ErrConnDone)
@@ -323,8 +323,8 @@ func TestHandleDeleteHost(t *testing.T) {
 	}
 
 	// 0 rows deleted
-	rows5 := mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error", "tags", "reboot_required", "packages_updated", "packages_available", "os_version", "kernel_version", "agent_version"}).
-		AddRow(int32(5), "test-host-5", "root", now, now, now, "", "", nil, []string{}, false, 0, 0, "", "", "")
+	rows5 := mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error", "tags", "reboot_required", "packages_updated", "packages_available", "os_version", "kernel_version", "agent_version", "offline_since"}).
+		AddRow(int32(5), "test-host-5", "root", now, now, now, "", "", nil, []string{}, false, 0, 0, "", "", "", nil)
 	mock.ExpectQuery(`SELECT (.+) FROM hosts WHERE id = \$1`).WithArgs(int32(5)).WillReturnRows(rows5)
 
 	mock.ExpectExec(`DELETE FROM hosts WHERE id = \$1`).WithArgs(int32(5)).WillReturnResult(pgxmock.NewResult("DELETE", 0))
@@ -375,8 +375,8 @@ func TestHandleReport_Success(t *testing.T) {
 	})
 
 	now := time.Now()
-	rows := mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error", "tags", "reboot_required", "packages_updated", "packages_available", "os_version", "kernel_version", "agent_version"}).
-		AddRow(int32(1), "test-host", "root", now, now, now, "update", "", nil, []string{}, true, 4, 7, "Ubuntu 24.04", "6.8.0", "1.2.3")
+	rows := mock.NewRows([]string{"id", "hostname", "ssh_user", "created_at", "updated_at", "last_seen", "update_output", "upgrade_output", "error", "tags", "reboot_required", "packages_updated", "packages_available", "os_version", "kernel_version", "agent_version", "offline_since"}).
+		AddRow(int32(1), "test-host", "root", now, now, now, "update", "", nil, []string{}, true, 4, 7, "Ubuntu 24.04", "6.8.0", "1.2.3", nil)
 
 	mock.ExpectQuery(`INSERT INTO hosts`).
 		WithArgs("test-host", "root", "update", "", sql.NullString{}, true, 4, 7, "Ubuntu 24.04", "6.8.0", "1.2.3").

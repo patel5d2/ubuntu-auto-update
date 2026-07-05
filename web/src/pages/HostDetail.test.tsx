@@ -16,7 +16,7 @@ const HOST: Host = {
   last_seen: '2026-04-28T00:00:00Z',
   update_output: 'Hit:1 archive ok',
   upgrade_output: '0 upgraded, 0 newly installed',
-  error: null, tags: [], reboot_required: false, packages_updated: 0, packages_available: 0, os_version: "", kernel_version: "", agent_version: "",
+  error: null, tags: [], reboot_required: false, packages_updated: 0, packages_available: 0, os_version: "", kernel_version: "", agent_version: "", offline_since: null,
 };
 
 const RUNS: UpdateRun[] = [

@@ -48,7 +48,7 @@ describe('AddHostModal', () => {
       last_seen: '2026-04-28T00:00:00Z',
       update_output: '',
       upgrade_output: '',
-      error: null, tags: [], reboot_required: false, packages_updated: 0, packages_available: 0, os_version: "", kernel_version: "", agent_version: "",
+      error: null, tags: [], reboot_required: false, packages_updated: 0, packages_available: 0, os_version: "", kernel_version: "", agent_version: "", offline_since: null,
     };
     const apiPost = vi.spyOn(api, 'apiPost').mockResolvedValue(created);
     const { onClose, onCreated } = renderModal();
@@ -69,7 +69,7 @@ describe('AddHostModal', () => {
     const created: Host = {
       id: 1, hostname: 'host', ssh_user: 'root',
       created_at: '', updated_at: '', last_seen: '',
-      update_output: '', upgrade_output: '', error: null, tags: [], reboot_required: false, packages_updated: 0, packages_available: 0, os_version: "", kernel_version: "", agent_version: "",
+      update_output: '', upgrade_output: '', error: null, tags: [], reboot_required: false, packages_updated: 0, packages_available: 0, os_version: "", kernel_version: "", agent_version: "", offline_since: null,
     };
     const apiPost = vi.spyOn(api, 'apiPost').mockResolvedValue(created);
     renderModal();

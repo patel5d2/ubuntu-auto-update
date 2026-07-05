@@ -195,6 +195,65 @@ func main() {
 		app.dispatchWebhooks(event, payload)
 	}
 
+	// Offline sweep: the server-side truth behind host_offline webhooks.
+	// OFFLINE_AFTER_MINUTES matches the UI's 15-minute default.
+	offlineAfter := 15
+	if v := os.Getenv("OFFLINE_AFTER_MINUTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			offlineAfter = n
+		}
+	}
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-cleanupCtx.Done():
+				return
+			case <-ticker.C:
+				newlyOffline, err := db.SweepOfflineHosts(cleanupCtx, dbPool, offlineAfter)
+				if err != nil {
+					log.Errorf("offline sweep: %v", err)
+					continue
+				}
+				for _, h := range newlyOffline {
+					log.Warnf("host %s offline (last seen %s)", h.Hostname, h.LastSeen)
+					app.dispatchWebhooks("host_offline", map[string]interface{}{
+						"host_id": h.ID, "hostname": h.Hostname, "last_seen": h.LastSeen,
+					})
+				}
+			}
+		}
+	}()
+
+	// Run-history retention: prune terminal runs older than RUN_RETENTION_DAYS
+	// (default 90; 0 disables). Runs once at startup, then daily, so frequently
+	// restarted deployments still prune.
+	retentionDays := 90
+	if v := os.Getenv("RUN_RETENTION_DAYS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			retentionDays = n
+		}
+	}
+	if retentionDays > 0 {
+		go func() {
+			ticker := time.NewTicker(24 * time.Hour)
+			defer ticker.Stop()
+			for {
+				if n, err := db.PruneRuns(cleanupCtx, dbPool, retentionDays); err != nil {
+					log.Errorf("run retention: %v", err)
+				} else if n > 0 {
+					log.Infof("run retention: pruned %d runs older than %d days", n, retentionDays)
+				}
+				select {
+				case <-cleanupCtx.Done():
+					return
+				case <-ticker.C:
+				}
+			}
+		}()
+	}
+
 	// Bootstrap an initial admin from ADMIN_USERNAME / ADMIN_PASSWORD env
 	// vars. Only takes effect when the users table is empty, so re-deploys
 	// don't quietly clobber a manually-created account.
@@ -586,6 +645,13 @@ func (app *Application) handleReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A fresh insert leaves last_seen equal to created_at (same statement);
+	// any later report bumps last_seen. That equality is the zero-cost
+	// "this report created the host" signal for the registered event.
+	if host.LastSeen.Equal(host.CreatedAt) {
+		app.dispatchWebhooks("host_registered", map[string]interface{}{"host_id": host.ID, "hostname": host.Hostname})
+	}
+
 	log.Infof("Upserted host: %s (ID: %d)", host.Hostname, host.ID)
 	w.WriteHeader(http.StatusAccepted)
 }
@@ -687,6 +753,7 @@ func (app *Application) handleCreateHost(w http.ResponseWriter, r *http.Request)
 		log.Infof("Operator created host: %s (ID: %d)", host.Hostname, host.ID)
 		app.audit(r, audit.ActionHostCreate, "host", strconv.FormatInt(int64(host.ID), 10),
 			map[string]interface{}{"hostname": host.Hostname, "ssh_user": host.SshUser})
+		app.dispatchWebhooks("host_registered", map[string]interface{}{"host_id": host.ID, "hostname": host.Hostname})
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(host)
@@ -738,6 +805,7 @@ func (app *Application) handleCreateHost(w http.ResponseWriter, r *http.Request)
 			"fingerprint": result.HostKeyFingerprint,
 			"sudo_scope":  result.SudoScope,
 		})
+	app.dispatchWebhooks("host_registered", map[string]interface{}{"host_id": host.ID, "hostname": host.Hostname})
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(host)
@@ -1343,8 +1411,14 @@ func (app *Application) runHostCommandOpts(w http.ResponseWriter, r *http.Reques
 	}
 	defer sshClient.Close()
 
+	// Same whole-run budget as the bulk coordinator: a remote command hung on
+	// a prompt fails the run instead of pinning this goroutine until the
+	// websocket dies.
+	runCtx, cancelRun := context.WithTimeout(r.Context(), updater.DefaultRunTimeout)
+	defer cancelRun()
+
 	for _, cmd := range commands {
-		exitCode, runErr := app.streamCommand(r.Context(), conn, sshClient, run.ID, cmd)
+		exitCode, runErr := app.streamCommand(runCtx, conn, sshClient, run.ID, cmd)
 		if runErr != nil {
 			finishErr = runErr.Error()
 			finishExit = exitCode
@@ -1412,8 +1486,16 @@ func (app *Application) streamCommand(ctx context.Context, conn *websocket.Conn,
 	go func() { defer wg.Done(); pumpReader(ctx, dbCtx, conn, app.DB, runID, stdout) }()
 	go func() { defer wg.Done(); pumpReader(ctx, dbCtx, conn, app.DB, runID, stderr) }()
 
-	wg.Wait()
-	err = session.Wait()
+	// On run-timeout (or client disconnect) close the session and client so
+	// the pumps and Wait unblock; otherwise a hung remote command leaks this
+	// goroutine.
+	err, timedOut := sshpkg.WaitWithAbort(ctx,
+		func() error { wg.Wait(); return session.Wait() },
+		func() { session.Close(); client.Close() },
+	)
+	if timedOut {
+		return -1, errors.New("run timed out; remote command killed")
+	}
 	if err == nil {
 		return 0, nil
 	}

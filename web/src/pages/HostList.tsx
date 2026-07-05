@@ -19,6 +19,9 @@ const OFFLINE_THRESHOLD_MS = 15 * 60 * 1000;
 
 function hostStatus(host: Host): HostStatus {
   if (host.error) return 'error';
+  // Server-side sweep is the source of truth; the client-side threshold
+  // below remains as a fallback for rows the sweep hasn't evaluated yet.
+  if (host.offline_since) return 'offline';
   const lastSeen = new Date(host.last_seen).getTime();
   if (Number.isFinite(lastSeen) && Date.now() - lastSeen > OFFLINE_THRESHOLD_MS) {
     return 'offline';

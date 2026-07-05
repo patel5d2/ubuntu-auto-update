@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -31,6 +32,12 @@ import (
 const (
 	DefaultConcurrency = 5
 	MaxConcurrency     = 20
+
+	// DefaultRunTimeout bounds one whole bulk run (all hosts, all steps).
+	// Hitting it closes the in-flight SSH sessions so hung remote commands
+	// (an apt prompt, a dead network) become failed runs, not leaked
+	// goroutines.
+	DefaultRunTimeout = 30 * time.Minute
 )
 
 // BulkRunOptions controls a fan-out update.
@@ -63,6 +70,9 @@ type BulkRunOptions struct {
 	Steps      []string
 	UseSudo    bool
 	PlaybookID *int32
+
+	// RunTimeout bounds the whole run; zero means DefaultRunTimeout.
+	RunTimeout time.Duration
 }
 
 // BulkResult is what we hand back to the API caller. RunIDs is parallel to
@@ -162,8 +172,12 @@ func (c *Coordinator) run(opts BulkRunOptions, groupID string, runIDs []int32, c
 	}()
 
 	// Fresh ctx — work isn't tied to the originating HTTP request, which has
-	// long since returned. 30 min is generous for slow hosts.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	// long since returned.
+	timeout := opts.RunTimeout
+	if timeout <= 0 {
+		timeout = DefaultRunTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	canary := opts.CanaryCount
@@ -351,9 +365,17 @@ func (c *Coordinator) runOneCommand(ctx context.Context, client *gossh.Client, r
 	pumpWG.Add(2)
 	go func() { defer pumpWG.Done(); pumpToRun(c.Pool, runID, stdout) }()
 	go func() { defer pumpWG.Done(); pumpToRun(c.Pool, runID, stderr) }()
-	pumpWG.Wait()
 
-	err = session.Wait()
+	// The pumps block on session reads; a hung remote command would pin this
+	// goroutine forever. On run-timeout, closing the session (and client)
+	// unblocks both pumps and Wait.
+	err, timedOut := sshpkg.WaitWithAbort(ctx,
+		func() error { pumpWG.Wait(); return session.Wait() },
+		func() { session.Close(); client.Close() },
+	)
+	if timedOut {
+		return -1, errors.New("run timed out; remote command killed")
+	}
 	if err == nil {
 		return 0, nil
 	}

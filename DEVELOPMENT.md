@@ -483,6 +483,12 @@ docker pull ghcr.io/patel5d2/ubuntu-auto-update:latest
 The image is published by `.github/workflows/docker-image.yml` for both
 `linux/amd64` and `linux/arm64` on every push to `main`.
 
+**Run exactly one backend replica.** The scheduler is replica-safe (its
+claim query atomically advances `next_run_at`), but the bulk coordinator's
+"one bulk run at a time" guard is in-process memory — two replicas would
+happily run concurrent bulk rollouts against the same fleet. Multi-replica
+HA is out of scope by design; scale the single instance vertically.
+
 To install the Rust agent on a managed Ubuntu host:
 
 ```bash

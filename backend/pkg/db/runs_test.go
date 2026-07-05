@@ -316,3 +316,26 @@ func TestGetRun(t *testing.T) {
 		t.Error("expected error")
 	}
 }
+
+func TestPruneRuns(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("error creating mock: %v", err)
+	}
+	defer mock.Close()
+
+	mock.ExpectExec(`DELETE FROM update_runs`).
+		WithArgs(90).
+		WillReturnResult(pgxmock.NewResult("DELETE", 12))
+
+	n, err := db.PruneRuns(context.Background(), mock, 90)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 12 {
+		t.Fatalf("pruned = %d, want 12", n)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Error(err)
+	}
+}
