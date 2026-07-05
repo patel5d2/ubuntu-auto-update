@@ -1,8 +1,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::Path;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 use uuid::Uuid;
 
 use crate::config::AgentConfig;
@@ -205,23 +204,6 @@ impl EnrollmentManager {
             Ok("Unknown".to_string())
         }
     }
-
-    pub fn is_enrolled(&self) -> bool {
-        self.config.security.api_key_file.exists()
-    }
-
-    pub fn get_host_id(&self) -> Result<String> {
-        if !self.config.enrollment.host_id_file.exists() {
-            return Err(anyhow::anyhow!("Host ID file does not exist"));
-        }
-
-        let host_id = fs::read_to_string(&self.config.enrollment.host_id_file)
-            .with_context(|| "Failed to read host ID")?
-            .trim()
-            .to_string();
-
-        Ok(host_id)
-    }
 }
 
 #[cfg(test)]
@@ -249,7 +231,7 @@ mod tests {
 
     #[test]
     fn test_os_version_parsing() {
-        let config = AgentConfig::default();
+        let _config = AgentConfig::default();
 
         // Create a minimal enrollment manager (will fail HTTP client creation)
         // but we can test the OS version logic if we had a way to mock it

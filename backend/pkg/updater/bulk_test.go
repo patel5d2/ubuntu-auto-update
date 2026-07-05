@@ -1,6 +1,7 @@
 package updater
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -114,7 +115,7 @@ func TestCoordinator_InFlightCount_AfterAdd(t *testing.T) {
 
 func TestStart_EmptyHostIDs(t *testing.T) {
 	c := &Coordinator{inFlightGroups: make(map[string]struct{})}
-	_, err := c.Start(nil, BulkRunOptions{HostIDs: []int32{}})
+	_, err := c.Start(context.Background(), BulkRunOptions{HostIDs: []int32{}})
 	if err == nil || !strings.Contains(err.Error(), "no hosts selected") {
 		t.Errorf("expected 'no hosts selected' error, got %v", err)
 	}

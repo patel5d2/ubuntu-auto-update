@@ -9,9 +9,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::process;
 use std::time::{Duration, Instant};
-use tokio::signal;
 use tracing::{debug, error, info, warn};
 
 use crate::config::AgentConfig;
@@ -412,10 +410,10 @@ async fn test_connectivity(config: &AgentConfig) -> Result<()> {
 }
 
 fn create_host_report(
-    config: &AgentConfig,
+    _config: &AgentConfig,
     update_results: &UpdateResults,
     system_metrics: Option<&crate::metrics::SystemMetrics>,
-    duration: Duration,
+    _duration: Duration,
 ) -> Result<HostReport> {
     let hostname = gethostname::gethostname()
         .into_string()
@@ -491,7 +489,7 @@ async fn send_report_to_backend(client: &SecureHttpClient, report: &HostReport) 
 async fn schedule_reboot(delay_minutes: u32) -> Result<()> {
     info!("Scheduling system reboot in {} minutes", delay_minutes);
 
-    let delay_seconds = delay_minutes * 60;
+    let _delay_seconds = delay_minutes * 60;
     let output = std::process::Command::new("shutdown")
         .args([
             "-r",

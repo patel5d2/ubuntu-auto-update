@@ -1,17 +1,13 @@
 use anyhow::{Context, Result};
-use prometheus::{
-    Counter, Encoder, Gauge, Histogram, IntCounter, IntGauge, Opts, Registry, TextEncoder,
-};
+use prometheus::{Counter, Encoder, Gauge, IntCounter, IntGauge, Opts, Registry, TextEncoder};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use sysinfo::{ComponentExt, CpuExt, DiskExt, System, SystemExt};
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use crate::config::MetricsConfig;
 

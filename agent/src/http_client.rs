@@ -4,16 +4,13 @@ use hmac::{Hmac, Mac};
 use reqwest::{Certificate, Client, ClientBuilder, Response};
 
 use sha2::Sha256;
-use std::fs::File;
-use std::io::BufReader;
 use std::path::Path;
-use std::sync::Arc;
 use std::time::Duration;
-use tokio::time::{sleep, Instant};
-use tracing::{debug, error, info, warn};
+use tokio::time::sleep;
+use tracing::{debug, info, warn};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use crate::config::{AgentConfig, SecurityConfig};
+use crate::config::AgentConfig;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -35,7 +32,6 @@ impl SecretKey {
 #[derive(Clone)]
 pub struct SecureHttpClient {
     client: Client,
-    config: Arc<SecurityConfig>,
     base_url: String,
     api_key: Option<SecretKey>,
     hmac_key: Option<SecretKey>,
@@ -96,7 +92,6 @@ impl SecureHttpClient {
 
         Ok(Self {
             client,
-            config: Arc::new(config.security.clone()),
             base_url: config.backend.url.clone(),
             api_key,
             hmac_key,
@@ -217,19 +212,6 @@ impl SecureHttpClient {
         let signature = mac.finalize().into_bytes();
         Ok(BASE64.encode(signature))
     }
-
-    pub fn verify_hmac_signature(
-        &self,
-        payload: &str,
-        signature: &str,
-        key: &SecretKey,
-    ) -> Result<bool> {
-        let expected_signature = self.create_hmac_signature(payload, key)?;
-        Ok(constant_time_eq(
-            signature.as_bytes(),
-            expected_signature.as_bytes(),
-        ))
-    }
 }
 
 fn load_client_identity(cert_path: &Path, key_path: &Path) -> Result<reqwest::Identity> {
@@ -254,39 +236,19 @@ fn load_ca_certificate(ca_path: &Path) -> Result<Certificate> {
     Ok(cert)
 }
 
-// Constant-time comparison to prevent timing attacks
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-
-    let mut result = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        result |= x ^ y;
-    }
-    result == 0
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::AgentConfig;
 
     #[test]
-    fn test_constant_time_eq() {
-        assert!(constant_time_eq(b"hello", b"hello"));
-        assert!(!constant_time_eq(b"hello", b"world"));
-        assert!(!constant_time_eq(b"hello", b"hell"));
-    }
-
-    #[test]
     fn test_hmac_signature() {
-        let key = SecretKey(b"test-key".to_vec());
-        let config = AgentConfig::default();
+        let _key = SecretKey(b"test-key".to_vec());
+        let _config = AgentConfig::default();
 
         // This would fail in real test without proper client setup
         // but we can test the signature logic with a mock
-        let payload = r#"{"test": "data"}"#;
+        let _payload = r#"{"test": "data"}"#;
 
         // Test that we can create signatures (actual HTTP client creation would fail)
         // In real tests, you'd use a test HTTP server

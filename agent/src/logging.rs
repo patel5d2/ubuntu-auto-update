@@ -1,9 +1,7 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 use tracing::Level;
-use tracing_subscriber::{
-    fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer, Registry,
-};
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Registry};
 
 use crate::config::LoggingConfig;
 

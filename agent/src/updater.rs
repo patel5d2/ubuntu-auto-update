@@ -1,8 +1,7 @@
 use anyhow::{Context, Result};
-use chrono::{DateTime, Local, NaiveTime, TimeZone};
+use chrono::{Local, NaiveTime};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
@@ -375,7 +374,7 @@ impl UpdateManager {
             let running_kernel = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
             // Check if there's a newer kernel installed
-            let dpkg_output = Command::new("dpkg").args(&["-l", "linux-image-*"]).output();
+            let dpkg_output = Command::new("dpkg").args(["-l", "linux-image-*"]).output();
 
             if let Ok(dpkg_output) = dpkg_output {
                 if dpkg_output.status.success() {
