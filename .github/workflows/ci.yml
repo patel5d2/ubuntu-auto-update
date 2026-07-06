@@ -64,7 +64,7 @@ jobs:
           DATABASE_URL: postgres://test:test@localhost:5432/test_db?sslmode=disable
         run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
       - name: Upload coverage
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: go-coverage
           path: backend/coverage.out
