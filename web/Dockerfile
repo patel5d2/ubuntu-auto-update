@@ -2,7 +2,7 @@
 #
 # Stage 1: build the React bundle.
 # Vite 7 requires Node >= 20.
-FROM node:20-alpine AS build
+FROM node:22-alpine AS build
 
 WORKDIR /app
 

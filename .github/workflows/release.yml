@@ -28,7 +28,7 @@ jobs:
             os: ubuntu-latest
             artifact: ua-agent-linux-arm64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -57,8 +57,10 @@ jobs:
   build-image:
     name: Build & Push Container Image
     runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - name: Log in to GHCR
@@ -78,6 +80,7 @@ jobs:
             type=sha,prefix=sha-,format=short
             type=raw,value=latest
       - name: Build and push
+        id: push
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -101,13 +104,16 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # Sign by digest: the semver image tags strip the leading v
+      # (v1.2.3 → 1.2.3), so signing by github.ref_name would target a tag
+      # that doesn't exist. The digest is also the stronger reference.
       - name: Sign image
         env:
           COSIGN_EXPERIMENTAL: 1
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
-          TAG="${{ github.ref_name }}"
-          cosign sign --yes "${IMAGE}:${TAG}"
+          DIGEST="${{ needs.build-image.outputs.digest }}"
+          cosign sign --yes "${IMAGE}@${DIGEST}"
 
   # ── Create GitHub Release ─────────────────────────────────────────────────
   release:
@@ -115,7 +121,7 @@ jobs:
     needs: [build-agent, build-image, sign-image]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/download-artifact@v4
         with:
           path: dist/

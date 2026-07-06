@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # Stage 1: build the React frontend
-FROM node:20-alpine AS frontend-builder
+FROM node:22-alpine AS frontend-builder
 WORKDIR /web
 # Copy web dependencies and install from the lockfile for reproducible builds
 COPY web/package.json web/package-lock.json ./
