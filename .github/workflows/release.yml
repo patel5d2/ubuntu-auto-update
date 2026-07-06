@@ -126,6 +126,10 @@ jobs:
         with:
           path: dist/
           merge-multiple: true
+          # Only the agent binaries: docker/build-push-action auto-uploads a
+          # .dockerbuild build-record artifact that fails to download and has
+          # no business in the release assets anyway.
+          pattern: ua-agent-*
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
