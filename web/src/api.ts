@@ -99,6 +99,14 @@ export async function apiLogin(username: string, password: string): Promise<Logi
     { method: 'POST', body: JSON.stringify({ username, password }) },
     false,
   );
+  // Auth model — why the token lives in localStorage (and not only the cookie):
+  // the backend also sets an HttpOnly `auth_token` cookie at login, which is the
+  // primary credential for HTTP requests. But the events WebSocket ignores
+  // cookies (a CSWSH defense) and authenticates via a `?token=` query param, so
+  // the client needs the raw token in JS to open the socket. Exfiltrating it
+  // requires an XSS, which the CSP already blocks (script-src 'self', no inline
+  // scripts). Removing this would break live streaming — don't "harden" it to
+  // cookie-only without also moving the WS to cookie/Origin auth end to end.
   if (data.token) localStorage.setItem('auth_token', data.token);
   if (data.role) localStorage.setItem('auth_role', data.role);
   return data;
