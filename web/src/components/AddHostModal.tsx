@@ -169,7 +169,7 @@ export function AddHostModal({ open, onClose, onCreated }: AddHostModalProps) {
           </small>
 
           {submitError && (
-            <article style={{ marginTop: '1rem', borderLeft: '4px solid #c0392b', padding: '0.75rem 1rem' }}>
+            <article style={{ marginTop: '1rem', borderLeft: '4px solid var(--bad)', padding: '0.75rem 1rem' }}>
               <strong>Couldn't add host.</strong>
               <div style={{ marginTop: '0.25rem' }}>{submitError.message}</div>
               {submitError.hint && (
