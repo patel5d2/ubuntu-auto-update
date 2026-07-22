@@ -44,6 +44,10 @@ test_*
 *.swo
 *~
 
+# Local Claude Code state / tooling (machine paths, dev creds — not for the repo)
+.claude/settings.local.json
+.claude/launch.json
+
 # OS generated files
 ._*
 .Spotlight-V100

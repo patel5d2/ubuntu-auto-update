@@ -61,16 +61,34 @@ The first login uses `ADMIN_USERNAME` (`admin`) / `ADMIN_PASSWORD` from
 `.env`. The script prints the generated password once on first run — copy
 it then or read it back from `.env` later.
 
-## Quick start (local dev, no Docker)
+## Quick start (local dev)
+
+Hot-reload for all three services (Postgres + Go backend + Vite), with every
+secret and connection string already baked in — no local toolchains, no `.env`
+to fill in:
 
 ```bash
-# 1. Postgres running with DATABASE_URL set in your shell
+docker compose -f docker-compose.dev.yml up
+# Web UI:  http://localhost:5173   (proxies /api to the backend on :8080)
+```
+
+Prefer running on the metal? The backend needs Postgres reachable and a few
+env vars, or it exits immediately (`DATABASE_URL environment variable not set`,
+and `ADMIN_PASSWORD` must be ≥12 chars). Set them explicitly:
+
+```bash
+# 1. Postgres (easiest: just the compose service)
+docker compose -f docker-compose.dev.yml up -d postgres
+
+# 2. Backend — export its required env, then run
+export DATABASE_URL='postgres://uau:uau@localhost:5432/uau_db?sslmode=disable'
+export ADMIN_USERNAME=admin ADMIN_PASSWORD=change-me-please ENROLLMENT_TOKEN=dev-enrollment-token
 cd backend && go run ./cmd/api          # API on :8080
 
-# 2. In another shell
+# 3. Frontend, in another shell
 cd web && npm install && npm run dev    # Vite on :5173
 
-# 3. (Optional) on a managed host
+# 4. (Optional) on a managed host
 cd agent && cargo run -- run
 ```
 
