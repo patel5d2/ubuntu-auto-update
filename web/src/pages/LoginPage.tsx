@@ -36,7 +36,7 @@ export function LoginPage() {
           <form onSubmit={handleSubmit}>
             <input type="text" name="username" placeholder="Username" aria-label="Username" required />
             <input type="password" name="password" placeholder="Password" aria-label="Password" required />
-            {error && <small style={{ color: 'var(--pico-color-red-500)' }}>{error}</small>}
+            {error && <small style={{ color: 'var(--bad)' }}>{error}</small>}
             <button type="submit" className="contrast" disabled={isLoading}>
               {isLoading ? 'Logging in...' : 'Login'}
             </button>

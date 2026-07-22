@@ -83,6 +83,51 @@
   --table-border-color: var(--border);
 }
 
+/* ---------------------------------------------------------------------------
+   Scale tokens (fonts / type / weight / tracking / spacing / radii).
+   Theme-independent; formalizes the raw rem values scattered through the app
+   so the componentized primitives (Button, StatCard, Modal, form fields, …)
+   reference names instead of magic numbers. Values match the existing CSS.
+--------------------------------------------------------------------------- */
+:root {
+  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI",
+    Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  --text-xs: 0.72rem;
+  --text-sm: 0.83rem;
+  --text-body: 0.92rem;
+  --text-base: 1rem;
+  --text-md: 1.15rem;
+  --text-lg: 1.55rem;
+  --text-xl: 2rem;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 640;
+  --weight-bold: 700;
+
+  --tracking-tight: -0.02em;
+  --tracking-tighter: -0.015em;
+  --tracking-wide: 0.04em;
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+
+  --radius-sm: 0.375rem;
+  --radius-md: 0.55rem;
+  --radius-lg: 0.75rem;
+  --radius-pill: 999px;
+}
+
 /* Tighter, more confident headings than Pico's defaults. */
 .content h2 {
   font-size: 1.55rem;

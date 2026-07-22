@@ -94,7 +94,7 @@ export function BulkUpdate() {
       </section>
 
       {error && (
-        <article style={{ borderLeft: '4px solid var(--pico-color-red-500)', marginTop: '1rem' }}>
+        <article style={{ borderLeft: '4px solid var(--bad)', marginTop: '1rem' }}>
           <p>{error}</p>
         </article>
       )}
@@ -133,8 +133,17 @@ export function BulkUpdate() {
 
 type Tone = 'azure' | 'green' | 'red' | 'grey';
 
+// Map summary tones onto the theme tokens (the --pico-color-* names were Pico
+// v2 tokens that never resolved in this v1 project).
+const TONE_COLOR: Record<Tone, string> = {
+  azure: 'var(--accent)',
+  green: 'var(--good)',
+  red: 'var(--bad)',
+  grey: 'var(--ink-muted)',
+};
+
 function SummaryPill({ label, value, tone }: { label: string; value: number; tone?: Tone }) {
-  const color = tone ? `var(--pico-color-${tone}-600)` : undefined;
+  const color = tone ? TONE_COLOR[tone] : undefined;
   return (
     <div style={{ minWidth: '6rem' }}>
       <small style={{ opacity: 0.7 }}>{label}</small>

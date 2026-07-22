@@ -29,11 +29,14 @@ const ToastContext = createContext<ToastContextValue | null>(null);
 
 const DEFAULT_DURATION_MS = 4000;
 
-const KIND_STYLE: Record<ToastKind, { bg: string; fg: string; border: string }> = {
-  success: { bg: 'var(--pico-color-green-100)', fg: 'var(--pico-color-green-800)', border: 'var(--pico-color-green-500)' },
-  error:   { bg: 'var(--pico-color-red-100)',   fg: 'var(--pico-color-red-800)',   border: 'var(--pico-color-red-500)' },
-  info:    { bg: 'var(--pico-color-azure-100)', fg: 'var(--pico-color-azure-800)', border: 'var(--pico-color-azure-500)' },
-  warning: { bg: 'var(--pico-color-amber-100)', fg: 'var(--pico-color-amber-800)', border: 'var(--pico-color-amber-500)' },
+// color-mix over theme tokens instead of --pico-color-* (Pico v2 names that
+// don't exist in this v1 project, so toasts rendered with no fill). Border
+// carries the semantic hue; text stays --ink for contrast in both themes.
+const KIND_STYLE: Record<ToastKind, { bg: string; border: string }> = {
+  success: { bg: 'color-mix(in srgb, var(--good) 14%, var(--card-bg))',   border: 'var(--good)' },
+  error:   { bg: 'color-mix(in srgb, var(--bad) 14%, var(--card-bg))',    border: 'var(--bad)' },
+  info:    { bg: 'color-mix(in srgb, var(--accent) 14%, var(--card-bg))', border: 'var(--accent-strong)' },
+  warning: { bg: 'color-mix(in srgb, #d97706 16%, var(--card-bg))',       border: '#d97706' },
 };
 
 interface ToastProviderProps {
@@ -127,9 +130,9 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
   const palette = KIND_STYLE[toast.kind];
   const style: CSSProperties = {
     backgroundColor: palette.bg,
-    color: palette.fg,
+    color: 'var(--ink)',
     borderLeft: `4px solid ${palette.border}`,
-    borderRadius: '0.375rem',
+    borderRadius: 'var(--radius-sm)',
     padding: '0.625rem 0.875rem',
     boxShadow: '0 4px 12px rgba(0,0,0,0.08)',
     display: 'flex',

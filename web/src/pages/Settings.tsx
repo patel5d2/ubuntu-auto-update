@@ -90,7 +90,7 @@ function ApiTokensSection() {
       </p>
 
       {freshSecret && (
-        <article style={{ borderLeft: '4px solid var(--pico-color-azure-500)' }}>
+        <article style={{ borderLeft: '4px solid var(--accent)' }}>
           <strong>Copy this token now — it will not be shown again.</strong>
           <pre style={{ marginTop: '0.5rem' }}><code>{freshSecret}</code></pre>
           <div style={{ display: 'flex', gap: '0.5rem' }}>

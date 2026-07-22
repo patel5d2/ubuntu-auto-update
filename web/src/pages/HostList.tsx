@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { apiDelete, apiGet, apiPost } from '../api';
 import type { BulkRunResult, Host, Playbook } from '../types';
 import { AddHostModal } from '../components/AddHostModal';
+import { Button } from '../components/Button';
 import { StatusBadge, type HostStatus } from '../components/StatusBadge';
 import { RelativeTime } from '../components/RelativeTime';
 import { useToast } from '../components/Toast';
@@ -267,13 +268,13 @@ export function HostList() {
     <div>
       <header style={hostListHeaderStyle}>
         <h2 style={{ margin: 0 }}>Managed Hosts</h2>
-        <button onClick={() => setAddOpen(true)} style={{ width: 'auto' }} title="Add host (n)">
+        <Button onClick={() => setAddOpen(true)} title="Add host (n)">
           + Add Host
-        </button>
+        </Button>
       </header>
 
       {fetchError ? (
-        <article style={{ color: 'var(--pico-color-red-500)' }}>
+        <article style={{ color: 'var(--bad)' }}>
           <p>{fetchError}</p>
         </article>
       ) : null}
@@ -358,15 +359,13 @@ export function HostList() {
           >
             Reboot {selected.size}
           </button>
-          <button
-            type="button"
-            className="contrast"
+          <Button
+            variant="danger"
             onClick={handleBulkDelete}
             disabled={bulkSubmitting}
-            style={{ width: 'auto' }}
           >
             Delete {selected.size}
-          </button>
+          </Button>
           <button
             type="button"
             className="secondary"
@@ -500,7 +499,7 @@ const bulkBarStyle: React.CSSProperties = {
   gap: '0.75rem',
   padding: '0.5rem 0.75rem',
   marginBottom: '0.75rem',
-  backgroundColor: 'var(--pico-card-background-color)',
+  backgroundColor: 'var(--card-bg)',
   borderRadius: '0.5rem',
   boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
   flexWrap: 'wrap',

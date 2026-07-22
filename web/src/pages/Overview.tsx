@@ -4,6 +4,7 @@ import { apiGet } from '../api';
 import type { Host, Overview as OverviewStats, Schedule } from '../types';
 import { RelativeTime } from '../components/RelativeTime';
 import { StatusBadge } from '../components/StatusBadge';
+import { StatCard } from '../components/StatCard';
 import { useEvent } from '../hooks/useEvents';
 
 const OFFLINE_THRESHOLD_MS = 15 * 60 * 1000;
@@ -62,7 +63,7 @@ export function Overview() {
   return (
     <div>
       <h2>Fleet Overview</h2>
-      {error && <article style={{ color: 'var(--pico-color-red-500)' }}>{error}</article>}
+      {error && <article style={{ color: 'var(--bad)' }}>{error}</article>}
 
       {stats && (
         <div className="stat-grid">
@@ -131,15 +132,6 @@ export function Overview() {
           )}
         </section>
       </div>
-    </div>
-  );
-}
-
-function StatCard({ label, value, tone }: { label: string; value: number; tone?: 'good' | 'bad' }) {
-  return (
-    <div className={`stat-card${tone ? ` stat-${tone}` : ''}`}>
-      <div className="stat-value">{value}</div>
-      <div className="stat-label">{label}</div>
     </div>
   );
 }

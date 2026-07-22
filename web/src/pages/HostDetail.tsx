@@ -362,7 +362,7 @@ export function HostDetail() {
             </div>
           )}
           {host.error && (
-            <article style={{ borderLeft: '4px solid var(--pico-color-red-500)' }}>
+            <article style={{ borderLeft: '4px solid var(--bad)' }}>
               <strong>Last error</strong>
               <pre style={{ marginTop: '0.5rem' }}><code>{host.error}</code></pre>
             </article>
@@ -473,7 +473,7 @@ export function HostDetail() {
       {/* Live output panel — stays visible after the stream finishes so the
           result is readable; a new run resets it. */}
       {lastKind !== null && (
-        <article style={{ marginTop: '1.5rem', borderLeft: '4px solid var(--pico-color-azure-500)' }}>
+        <article style={{ marginTop: '1.5rem', borderLeft: '4px solid var(--accent)' }}>
           <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <strong>{lastKind === 'update' ? 'Update output' : lastKind === 'playbook' ? 'Playbook output' : 'Preview output'}</strong>
             {isStreaming ? (

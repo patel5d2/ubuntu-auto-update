@@ -15,10 +15,13 @@ interface TabsProps {
 const navStyle: CSSProperties = {
   display: 'flex',
   gap: '0.25rem',
-  borderBottom: '1px solid var(--pico-muted-border-color)',
+  borderBottom: '1px solid var(--border)',
   marginBottom: '1rem',
 };
 
+// Theme tokens (--border/--accent/--ink) instead of --pico-* names: those were
+// Pico v2 tokens that don't exist in this v1 project, so the tab colors never
+// resolved. See the same fix in StatusBadge.
 const buttonBaseStyle: CSSProperties = {
   background: 'transparent',
   border: 'none',
@@ -27,9 +30,10 @@ const buttonBaseStyle: CSSProperties = {
   margin: 0,
   padding: '0.5rem 0.75rem',
   cursor: 'pointer',
+  fontFamily: 'var(--font-sans)',
   fontWeight: 500,
+  fontSize: 'var(--text-body)',
   width: 'auto',
-  color: 'var(--pico-color)',
 };
 
 /**
@@ -44,8 +48,9 @@ export function Tabs({ tabs, active, onChange }: TabsProps) {
         const isActive = tab.id === active;
         const style: CSSProperties = {
           ...buttonBaseStyle,
-          borderBottomColor: isActive ? 'var(--pico-primary)' : 'transparent',
-          opacity: isActive ? 1 : 0.7,
+          borderBottomColor: isActive ? 'var(--accent)' : 'transparent',
+          color: isActive ? 'var(--ink)' : 'var(--ink-muted)',
+          opacity: isActive ? 1 : 0.85,
         };
         return (
           <button
