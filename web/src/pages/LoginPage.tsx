@@ -38,9 +38,9 @@ export function LoginPage() {
           <h2 style={{ color: 'var(--ink-muted)' }}>Manage your fleet's updates</h2>
         </hgroup>
         <form onSubmit={handleSubmit}>
-          <input type="text" name="username" placeholder="Username" aria-label="Username" required />
+          <input type="text" name="username" placeholder="Username" aria-label="Username" autoComplete="username" required />
           <div style={{ position: 'relative', marginBottom: '1rem' }}>
-            <input type={showPassword ? 'text' : 'password'} name="password" placeholder="Password" aria-label="Password" required style={{ marginBottom: 0, paddingRight: '4rem' }} />
+            <input type={showPassword ? 'text' : 'password'} name="password" placeholder="Password" aria-label="Password" autoComplete="current-password" required style={{ marginBottom: 0, paddingRight: '4rem' }} />
             <button
               type="button"
               onClick={() => setShowPassword((v) => !v)}

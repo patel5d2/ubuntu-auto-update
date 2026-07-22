@@ -77,7 +77,9 @@ env vars, or it exits immediately (`DATABASE_URL environment variable not set`,
 and `ADMIN_PASSWORD` must be ≥12 chars). Set them explicitly:
 
 ```bash
-# 1. Postgres (easiest: just the compose service)
+# 1. Postgres (easiest: just the compose service — uses the uau/uau/uau_db
+#    defaults below; if you override POSTGRES_USER/PASSWORD/DB, match them in
+#    DATABASE_URL too)
 docker compose -f docker-compose.dev.yml up -d postgres
 
 # 2. Backend — export its required env, then run
@@ -85,10 +87,10 @@ export DATABASE_URL='postgres://uau:uau@localhost:5432/uau_db?sslmode=disable'
 export ADMIN_USERNAME=admin ADMIN_PASSWORD=change-me-please ENROLLMENT_TOKEN=dev-enrollment-token
 cd backend && go run ./cmd/api          # API on :8080
 
-# 3. Frontend, in another shell
+# 3. Frontend, in another shell (from the repo root)
 cd web && npm install && npm run dev    # Vite on :5173
 
-# 4. (Optional) on a managed host
+# 4. (Optional) on a managed host, from the repo root
 cd agent && cargo run -- run
 ```
 
