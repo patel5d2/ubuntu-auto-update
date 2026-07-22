@@ -4,6 +4,7 @@ import { apiLogin } from '../api';
 export function LoginPage() {
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -38,7 +39,17 @@ export function LoginPage() {
         </hgroup>
         <form onSubmit={handleSubmit}>
           <input type="text" name="username" placeholder="Username" aria-label="Username" required />
-          <input type="password" name="password" placeholder="Password" aria-label="Password" required />
+          <div style={{ position: 'relative', marginBottom: '1rem' }}>
+            <input type={showPassword ? 'text' : 'password'} name="password" placeholder="Password" aria-label="Password" required style={{ marginBottom: 0, paddingRight: '4rem' }} />
+            <button
+              type="button"
+              onClick={() => setShowPassword((v) => !v)}
+              aria-label={showPassword ? 'Hide password' : 'Show password'}
+              style={{ position: 'absolute', right: '0.5rem', top: '50%', transform: 'translateY(-50%)', width: 'auto', margin: 0, padding: '0.15rem 0.45rem', fontSize: '0.78rem', background: 'transparent', color: 'var(--ink-muted)', border: 'none', boxShadow: 'none', cursor: 'pointer' }}
+            >
+              {showPassword ? 'Hide' : 'Show'}
+            </button>
+          </div>
           {error && <small style={{ color: 'var(--bad)', display: 'block', marginBottom: '0.5rem' }}>{error}</small>}
           <button type="submit" disabled={isLoading}>
             {isLoading ? 'Logging in...' : 'Login'}
